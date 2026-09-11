@@ -1,0 +1,4 @@
+timestamp,event_type,host,detail
+2026-03-04T08:23:30+00:00,file_write,corp-ws-042,C:\Users\jsmith\AppData\Local\Temp\invoice_q1.docm
+2026-03-04T08:23:41+00:00,macro_execute,corp-ws-042,invoice_q1.docm
+2026-03-04T08:24:02+00:00,process_start,corp-ws-042,powershell.exe -enc <redacted-for-example>

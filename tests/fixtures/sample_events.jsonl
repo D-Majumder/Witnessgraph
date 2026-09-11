@@ -1,0 +1,5 @@
+{"event_type": "logon", "timestamp": "2026-01-15T09:00:00+00:00", "user": "alice", "host": "ws-01"}
+{"event_type": "process_start", "timestamp": "2026-01-15T09:01:30+00:00", "user": "alice", "host": "ws-01", "process": "powershell.exe"}
+{"event_type": "network_connect", "timestamp": "2026-01-15T09:02:10+00:00", "host": "ws-01", "dest_ip": "203.0.113.7", "dest_port": "443"}
+not valid json at all
+{"event_type": "logoff", "timestamp": "2026-01-15T10:15:00+00:00", "user": "alice", "host": "ws-01"}

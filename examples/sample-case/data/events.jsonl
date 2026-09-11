@@ -1,0 +1,4 @@
+{"event_type": "logon", "timestamp": "2026-03-04T08:15:00+00:00", "user": "jsmith", "host": "corp-ws-042"}
+{"event_type": "process_start", "timestamp": "2026-03-04T08:16:12+00:00", "user": "jsmith", "host": "corp-ws-042", "process": "outlook.exe"}
+{"event_type": "process_start", "timestamp": "2026-03-04T08:22:47+00:00", "user": "jsmith", "host": "corp-ws-042", "process": "winword.exe", "parent": "outlook.exe"}
+{"event_type": "network_connect", "timestamp": "2026-03-04T08:23:05+00:00", "host": "corp-ws-042", "dest_ip": "198.51.100.44", "dest_port": "443"}

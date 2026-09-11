@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "witnessgraph"
+version = "0.1.0"
+description = "An evidence-first, reproducible cybersecurity investigation platform."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "pydantic>=2.6",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "hypothesis>=6.100",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+witnessgraph = "witnessgraph.cli.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/witnessgraph"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# UP042 suggests enum.StrEnum, which does not exist before Python 3.12;
+# this project deliberately targets 3.11+ -- see the "Python version"
+# section of README.md for why, and `requires-python` above.
+ignore = ["UP042"]
+
+[tool.ruff.lint.per-file-ignores]
+# Typer's documented parameter-declaration idiom is `x: T = typer.Argument(...)`
+# / `typer.Option(...)` -- these calls are evaluated once at import time to
+# build static parameter metadata, not per-call mutable defaults, so B008
+# ("no function calls in argument defaults") does not apply here.
+"src/witnessgraph/cli/main.py" = ["B008"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+mypy_path = "src"
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+# Strict typing matters most for src/ (the code other researchers must
+# audit and trust -- see DESIGN.md). Test functions legitimately take
+# loosely-typed pytest.mark.parametrize arguments; relaxing a few strict
+# sub-checks here avoids fighting the test framework's own idioms.
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disable_error_code = ["attr-defined"]

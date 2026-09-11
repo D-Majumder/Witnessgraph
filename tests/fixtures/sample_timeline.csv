@@ -1,0 +1,4 @@
+timestamp,event_type,host,detail
+2026-01-15T09:05:00+00:00,file_write,ws-01,C:\Users\alice\Downloads\invoice.pdf.exe
+2026-01-15T09:06:30+00:00,file_execute,ws-01,C:\Users\alice\Downloads\invoice.pdf.exe
+2026-01-15T09:07:45+00:00,registry_write,ws-01,HKCU\Software\Run\Updater

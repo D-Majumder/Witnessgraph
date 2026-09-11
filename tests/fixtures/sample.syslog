@@ -1,0 +1,4 @@
+Jan 15 09:08:12 ws-01 sshd[4821]: Accepted publickey for alice from 198.51.100.23 port 51422
+Jan 15 09:08:45 ws-01 sudo[4830]: alice : COMMAND=/usr/bin/whoami
+this line does not match the syslog pattern at all
+Jan 15 09:09:03 ws-01 cron[512]: (root) CMD (run-parts /etc/cron.hourly)

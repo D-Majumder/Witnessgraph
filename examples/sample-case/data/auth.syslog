@@ -1,0 +1,2 @@
+Mar 4 08:14:55 corp-ws-042 sshd[9911]: Accepted publickey for jsmith from 192.0.2.15 port 55210
+Mar 4 08:24:10 corp-ws-042 sudo[9950]: jsmith : COMMAND=/usr/bin/id
