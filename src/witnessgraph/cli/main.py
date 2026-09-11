@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import sqlite3
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NoReturn
 
 import typer
 
@@ -17,6 +20,7 @@ from witnessgraph.ingest.pipeline import ingest_source
 from witnessgraph.ingest.registry import get_adapter, list_adapters
 from witnessgraph.portable import export_case, import_case
 from witnessgraph.replay.replay import replay_and_verify
+from witnessgraph.report.render import render_report_bytes
 from witnessgraph.store.case import Case
 
 app = typer.Typer(
@@ -35,6 +39,16 @@ def _resolve_evidence_ref(case: Case, ref_id: str) -> EvidenceRef:
     if case.store.get_normalized_event(ref_id) is not None:
         return EvidenceRef(kind="normalized_event", id=ref_id)
     raise typer.BadParameter(f"{ref_id!r} is not a known EvidenceItem or NormalizedEvent id")
+
+
+def _fail_corrupted_case(case_dir: Path) -> NoReturn:
+    """Clean, non-traceback failure for a case.db that exists but cannot be
+    read (not a valid SQLite database, or internally corrupted) -- see
+    docs/phase2-v0.2-spec.md §14 (MAJOR 5 resolution)."""
+    typer.echo(
+        f"error: {case_dir} does not contain a readable Witnessgraph case database", err=True
+    )
+    raise typer.Exit(1)
 
 
 @app.command()
@@ -232,12 +246,118 @@ def import_case_cmd(
     dest_dir: Path = typer.Argument(..., help="Destination directory for the restored case."),
 ) -> None:
     """Import a .wgcase archive into a fresh case directory."""
-    case = import_case(archive, dest_dir)
+    try:
+        case = import_case(archive, dest_dir)
+    except sqlite3.DatabaseError:
+        typer.echo(
+            "error: the archive's case database is not readable (corrupted or invalid)",
+            err=True,
+        )
+        raise typer.Exit(1) from None
     manifest = case.load_recorded_manifest()
     case.close()
     typer.echo(f"imported {archive} -> {dest_dir}")
     if manifest:
         typer.echo(f"manifest hash: {manifest.manifest_hash}")
+
+
+@app.command()
+def report(
+    case_dir: Path = typer.Argument(..., help="Case directory to render a report for."),
+    output: Path | None = typer.Option(
+        None, "--output", help="Write the report to this file instead of stdout."
+    ),
+    output_format: str = typer.Option(
+        "markdown", "--format", help="Report output format. Only 'markdown' is supported."
+    ),
+) -> None:
+    """Render a case's full investigative content as a single, deterministic Markdown document.
+
+    Writes to stdout by default; pass --output to write the same
+    deterministic bytes to a file instead.
+    """
+    if output_format != "markdown":
+        raise typer.BadParameter(
+            f"unsupported --format {output_format!r}; only 'markdown' is supported"
+        )
+    if output is not None and output.exists():
+        typer.echo(f"error: {output} already exists", err=True)
+        raise typer.Exit(1)
+
+    try:
+        case = Case.open(case_dir)
+    except sqlite3.DatabaseError:
+        _fail_corrupted_case(case_dir)
+
+    try:
+        try:
+            report_bytes = render_report_bytes(
+                case_name=case_dir.name,
+                store=case.store,
+                recomputed_manifest=case.compute_manifest(),
+                recorded_manifest=case.load_recorded_manifest(),
+            )
+        except sqlite3.DatabaseError:
+            _fail_corrupted_case(case_dir)
+    finally:
+        case.close()
+
+    if output is None:
+        sys.stdout.buffer.write(report_bytes)
+        sys.stdout.buffer.flush()
+    else:
+        output.write_bytes(report_bytes)
+        typer.echo(f"wrote report to {output}")
+
+
+@app.command()
+def verify(
+    case_dir: Path = typer.Argument(..., help="Case directory to verify."),
+    check_report: bool = typer.Option(
+        False, "--report", help="Also confirm the report regenerates without error."
+    ),
+) -> None:
+    """Confirm a case's integrity and reproducibility: recompute its manifest
+    and compare it to the recorded one (as `replay` does), and optionally
+    confirm the report still regenerates without error.
+    """
+    try:
+        case = Case.open(case_dir)
+    except sqlite3.DatabaseError:
+        _fail_corrupted_case(case_dir)
+
+    report_failed = False
+    try:
+        try:
+            result = replay_and_verify(case)
+        except sqlite3.DatabaseError:
+            _fail_corrupted_case(case_dir)
+
+        typer.echo(f"recomputed manifest hash: {result.recomputed_manifest.manifest_hash}")
+        if result.recorded_manifest is not None:
+            typer.echo(f"recorded manifest hash:   {result.recorded_manifest.manifest_hash}")
+        typer.echo("MATCH" if result.matches_recorded else "MISMATCH")
+
+        if check_report:
+            try:
+                render_report_bytes(
+                    case_name=case_dir.name,
+                    store=case.store,
+                    recomputed_manifest=result.recomputed_manifest,
+                    recorded_manifest=result.recorded_manifest,
+                )
+            except sqlite3.DatabaseError:
+                _fail_corrupted_case(case_dir)
+            except Exception as exc:  # noqa: BLE001 -- smoke check must surface any failure
+                report_failed = True
+                typer.echo(f"report generation: FAILED: {exc}", err=True)
+            else:
+                typer.echo("report generation: OK")
+    finally:
+        case.close()
+
+    if not result.matches_recorded or report_failed:
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -260,9 +380,17 @@ def contradictions(case_dir: Path) -> None:
 @app.command()
 def replay(case_dir: Path) -> None:
     """Recompute a case's provenance manifest and verify it against the recorded one."""
-    case = Case.open(case_dir)
-    result = replay_and_verify(case)
-    case.close()
+    try:
+        case = Case.open(case_dir)
+    except sqlite3.DatabaseError:
+        _fail_corrupted_case(case_dir)
+    try:
+        try:
+            result = replay_and_verify(case)
+        except sqlite3.DatabaseError:
+            _fail_corrupted_case(case_dir)
+    finally:
+        case.close()
     typer.echo(f"recomputed manifest hash: {result.recomputed_manifest.manifest_hash}")
     if result.recorded_manifest is not None:
         typer.echo(f"recorded manifest hash:   {result.recorded_manifest.manifest_hash}")
