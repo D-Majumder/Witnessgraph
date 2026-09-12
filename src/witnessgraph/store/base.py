@@ -16,6 +16,7 @@ from witnessgraph.core.evidence import EvidenceItem
 from witnessgraph.core.hypothesis import Hypothesis
 from witnessgraph.core.time_model import TimeAssertion
 from witnessgraph.core.tracked_finding import FindingStatus, TrackedGapFinding
+from witnessgraph.core.tracked_time_contradiction import TrackedTimeContradiction
 
 
 class Store(Protocol):
@@ -52,6 +53,21 @@ class Store(Protocol):
     ) -> TrackedGapFinding: ...
     def get_tracked_finding(self, id: str) -> TrackedGapFinding | None: ...
     def list_tracked_findings(self) -> list[TrackedGapFinding]: ...
+
+    def create_tracked_contradiction(
+        self, contradiction: TrackedTimeContradiction
+    ) -> TrackedTimeContradiction: ...
+    def annotate_tracked_contradiction(
+        self,
+        id: str,
+        *,
+        status: FindingStatus,
+        annotated_by: str,
+        annotated_at: datetime,
+        note: str | None,
+    ) -> TrackedTimeContradiction: ...
+    def get_tracked_contradiction(self, id: str) -> TrackedTimeContradiction | None: ...
+    def list_tracked_contradictions(self) -> list[TrackedTimeContradiction]: ...
 
     def close(self) -> None: ...
 

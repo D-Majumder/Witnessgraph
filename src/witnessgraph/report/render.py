@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 from witnessgraph.core.events import NormalizedEvent
 from witnessgraph.core.time_model import TimeAssertion
 from witnessgraph.core.tracked_finding import TrackedGapFinding
+from witnessgraph.core.tracked_time_contradiction import TrackedTimeContradiction
 from witnessgraph.correlate.contradictions import TimeContradiction, detect_time_contradictions
 from witnessgraph.correlate.gaps import GapAnalysisResult
 from witnessgraph.correlate.tracking import is_still_reproduced
@@ -425,6 +426,58 @@ def _render_tracked_findings(store: Store) -> str | None:
     return "\n".join(lines)
 
 
+_TRACKED_CONTRADICTION_DISCLOSURE = (
+    "Review status is workflow metadata only; reviewed or dismissed does "
+    "not mean the contradiction is resolved, adjudicated, or that either "
+    "assertion is more correct. Witnessgraph does not determine which "
+    "disagreeing assertion is true."
+)
+
+
+def _format_tracked_contradiction_annotation(contradiction: TrackedTimeContradiction) -> str:
+    if contradiction.annotated_by is None:
+        return "(not yet reviewed)"
+    assert contradiction.annotated_at is not None  # paired by the model's own invariant
+    note = _untrusted(contradiction.note) if contradiction.note is not None else "(none)"
+    return (
+        f"by {_untrusted(contradiction.annotated_by)} at "
+        f"{_format_datetime(contradiction.annotated_at)}, note: {note}"
+    )
+
+
+def _render_tracked_contradictions(store: Store) -> str | None:
+    """``## Tracked Contradictions`` (v0.8). Returns ``None`` (section
+    omitted entirely, not rendered as empty) when no contradictions have
+    been tracked -- mirrors ``_render_tracked_findings``'s pattern, but
+    structurally disjoint from it (docs/phase4-v0.4-gap-analysis-design.md
+    §9): a separate section, never merged with ``## Contradictions`` or
+    ``## Tracked Findings``.
+
+    Deliberately has no "still reproduced" line -- see
+    ``TrackedTimeContradiction``'s module docstring for why: a genuinely
+    detected contradiction is reproducible with certainty by every future
+    analysis run under this codebase's append-only TimeAssertion model,
+    so such an indicator would either always read "yes" (no information)
+    or risk being misread as a live re-validation signal.
+    """
+    contradictions = sorted(store.list_tracked_contradictions(), key=lambda t: t.id)
+    if not contradictions:
+        return None
+    lines = ["## Tracked Contradictions", ""]
+    for contradiction in contradictions:
+        first_id, second_id = contradiction.assertion_ids
+        lines.append(f"- Tracked contradiction `{contradiction.id}`")
+        lines.append(f"  - subject event: `{contradiction.subject_event_id}`")
+        lines.append(f"  - assertions: `{first_id}`, `{second_id}`")
+        lines.append(
+            f"  - status: {contradiction.status.value} "
+            f"({_format_tracked_contradiction_annotation(contradiction)})"
+        )
+    lines.append("")
+    lines.append(_TRACKED_CONTRADICTION_DISCLOSURE)
+    return "\n".join(lines)
+
+
 def _render_integrity_summary(
     recomputed_manifest: ProvenanceManifest,
     recorded_manifest: ProvenanceManifest | None,
@@ -501,6 +554,9 @@ def render_report(
     tracked_findings_section = _render_tracked_findings(store)
     if tracked_findings_section is not None:
         sections.append(tracked_findings_section)
+    tracked_contradictions_section = _render_tracked_contradictions(store)
+    if tracked_contradictions_section is not None:
+        sections.append(tracked_contradictions_section)
     sections.append(_render_integrity_summary(recomputed_manifest, recorded_manifest))
     return "\n\n".join(sections) + "\n"
 

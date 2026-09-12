@@ -27,6 +27,7 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from witnessgraph.core.annotation import validate_annotation_pairing
 from witnessgraph.core.ids import content_hash
 
 
@@ -34,30 +35,6 @@ class FindingStatus(str, Enum):
     OPEN = "open"
     REVIEWED = "reviewed"
     DISMISSED = "dismissed"
-
-
-def _validate_annotation(annotated_by: str | None, annotated_at: datetime | None) -> None:
-    """Enforce the annotation-pairing/non-blank invariant.
-
-    Shared by the model's own ``@model_validator`` (construction path) and
-    ``with_annotation()`` (update path) -- the two are NOT the same code
-    path in Pydantic v2: ``model_copy(update=...)`` deliberately does not
-    re-run validators (this is documented Pydantic behavior, not a bug),
-    so relying on the model validator alone would silently let
-    ``with_annotation()`` produce an invalid object (e.g. a whitespace-only
-    ``annotated_by``) that the constructor would have rejected. Calling
-    this function explicitly from both places is what actually closes
-    that gap -- found and fixed during adversarial implementation review.
-    """
-    has_by = annotated_by is not None
-    has_at = annotated_at is not None
-    if has_by != has_at:
-        raise ValueError(
-            "annotated_by and annotated_at must both be set or both be "
-            "None -- a never-annotated finding has neither"
-        )
-    if has_by and not annotated_by.strip():  # type: ignore[union-attr]
-        raise ValueError("annotated_by must not be blank when present")
 
 
 class TrackedGapFinding(BaseModel):
@@ -118,7 +95,7 @@ class TrackedGapFinding(BaseModel):
 
     @model_validator(mode="after")
     def _annotation_is_paired(self) -> TrackedGapFinding:
-        _validate_annotation(self.annotated_by, self.annotated_at)
+        validate_annotation_pairing(self.annotated_by, self.annotated_at)
         return self
 
     @staticmethod
@@ -178,10 +155,10 @@ class TrackedGapFinding(BaseModel):
         calling ``model_copy`` -- ``model_copy(update=...)`` does not
         re-run the model's own validators, so this call is what actually
         enforces the non-blank/paired invariant on this path (see
-        ``_validate_annotation``); it must never be assumed to happen
-        automatically.
+        ``validate_annotation_pairing``); it must never be assumed to
+        happen automatically.
         """
-        _validate_annotation(annotated_by, annotated_at)
+        validate_annotation_pairing(annotated_by, annotated_at)
         return self.model_copy(
             update={
                 "status": status,

@@ -29,6 +29,7 @@ from witnessgraph.core.hypothesis import Hypothesis
 from witnessgraph.core.ids import sha256_hex
 from witnessgraph.core.time_model import TimeAssertion
 from witnessgraph.core.tracked_finding import FindingStatus, TrackedGapFinding
+from witnessgraph.core.tracked_time_contradiction import TrackedTimeContradiction
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS evidence_items (id TEXT PRIMARY KEY, data TEXT NOT NULL);
@@ -37,6 +38,7 @@ CREATE TABLE IF NOT EXISTS entities (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS time_assertions (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS hypotheses (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS tracked_gap_findings (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS tracked_time_contradictions (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 """
 
 
@@ -331,6 +333,75 @@ class SqliteStore:
             "SELECT data FROM tracked_gap_findings ORDER BY id"
         ).fetchall()
         return [TrackedGapFinding.model_validate_json(r[0]) for r in rows]
+
+    # -- tracked time contradictions (v0.8) -------------------------------
+    #
+    # Structurally independent of tracked_gap_findings: separate table,
+    # separate model, never iterated or joined together -- see
+    # docs/phase4-v0.4-gap-analysis-design.md §9.
+    def create_tracked_contradiction(
+        self, contradiction: TrackedTimeContradiction
+    ) -> TrackedTimeContradiction:
+        """Insert-if-absent by ``contradiction.id`` (content-derived).
+
+        If a row with this id already exists, it is returned UNCHANGED --
+        re-discovery of an already-tracked contradiction never resets or
+        overwrites its status/annotated_by/annotated_at/note, mirroring
+        ``create_tracked_finding``'s exact semantics.
+        """
+        existing = self.get_tracked_contradiction(contradiction.id)
+        if existing is not None:
+            return existing
+        self._conn.execute(
+            "INSERT INTO tracked_time_contradictions (id, data) VALUES (?, ?)",
+            (contradiction.id, contradiction.model_dump_json()),
+        )
+        self._maybe_commit()
+        return contradiction
+
+    def annotate_tracked_contradiction(
+        self,
+        id: str,
+        *,
+        status: FindingStatus,
+        annotated_by: str,
+        annotated_at: datetime,
+        note: str | None,
+    ) -> TrackedTimeContradiction:
+        """Update ONLY the annotation of an existing tracked contradiction.
+
+        Anchor fields (``subject_event_id``, ``assertion_ids``) are never
+        parameters to this method and are always copied byte-for-byte
+        from the stored row via
+        ``TrackedTimeContradiction.with_annotation()`` -- there is no
+        parameter through which a caller could supply a different anchor
+        value. Raises ``ValueError`` if no row with this id exists.
+        """
+        existing = self.get_tracked_contradiction(id)
+        if existing is None:
+            raise ValueError(f"no tracked contradiction {id!r} to annotate")
+        updated = existing.with_annotation(
+            status=status, annotated_by=annotated_by, annotated_at=annotated_at, note=note
+        )
+        assert updated.id == existing.id  # defense-in-depth: anchor cannot have moved
+        self._conn.execute(
+            "UPDATE tracked_time_contradictions SET data = ? WHERE id = ?",
+            (updated.model_dump_json(), id),
+        )
+        self._maybe_commit()
+        return updated
+
+    def get_tracked_contradiction(self, id: str) -> TrackedTimeContradiction | None:
+        row = self._conn.execute(
+            "SELECT data FROM tracked_time_contradictions WHERE id = ?", (id,)
+        ).fetchone()
+        return TrackedTimeContradiction.model_validate_json(row[0]) if row else None
+
+    def list_tracked_contradictions(self) -> list[TrackedTimeContradiction]:
+        rows = self._conn.execute(
+            "SELECT data FROM tracked_time_contradictions ORDER BY id"
+        ).fetchall()
+        return [TrackedTimeContradiction.model_validate_json(r[0]) for r in rows]
 
 
 class FileBlobStore:

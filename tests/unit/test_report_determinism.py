@@ -19,6 +19,7 @@ from witnessgraph.core.hypothesis import EvidenceRef, Hypothesis
 from witnessgraph.core.provenance import compute_manifest
 from witnessgraph.core.time_model import TimeAssertion, TimePrecision
 from witnessgraph.core.tracked_finding import FindingStatus, TrackedGapFinding
+from witnessgraph.core.tracked_time_contradiction import TrackedTimeContradiction
 from witnessgraph.report.render import render_report, render_report_bytes
 
 NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
@@ -37,6 +38,7 @@ class _FakeStore:
     time_assertions: dict[str, TimeAssertion] = field(default_factory=dict)
     hypotheses: dict[str, Hypothesis] = field(default_factory=dict)
     tracked_findings: dict[str, TrackedGapFinding] = field(default_factory=dict)
+    tracked_contradictions: dict[str, TrackedTimeContradiction] = field(default_factory=dict)
 
     def put_evidence(self, item: EvidenceItem) -> None:
         self.evidence[item.id] = item
@@ -110,6 +112,39 @@ class _FakeStore:
 
     def list_tracked_findings(self) -> list[TrackedGapFinding]:
         return list(self.tracked_findings.values())
+
+    def create_tracked_contradiction(
+        self, contradiction: TrackedTimeContradiction
+    ) -> TrackedTimeContradiction:
+        existing = self.tracked_contradictions.get(contradiction.id)
+        if existing is not None:
+            return existing
+        self.tracked_contradictions[contradiction.id] = contradiction
+        return contradiction
+
+    def annotate_tracked_contradiction(
+        self,
+        id: str,
+        *,
+        status: FindingStatus,
+        annotated_by: str,
+        annotated_at: datetime,
+        note: str | None,
+    ) -> TrackedTimeContradiction:
+        existing = self.tracked_contradictions.get(id)
+        if existing is None:
+            raise ValueError(f"no tracked contradiction {id!r} to annotate")
+        updated = existing.with_annotation(
+            status=status, annotated_by=annotated_by, annotated_at=annotated_at, note=note
+        )
+        self.tracked_contradictions[id] = updated
+        return updated
+
+    def get_tracked_contradiction(self, id: str) -> TrackedTimeContradiction | None:
+        return self.tracked_contradictions.get(id)
+
+    def list_tracked_contradictions(self) -> list[TrackedTimeContradiction]:
+        return list(self.tracked_contradictions.values())
 
     def close(self) -> None:
         pass

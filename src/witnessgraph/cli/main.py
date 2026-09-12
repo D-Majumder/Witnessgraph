@@ -16,6 +16,8 @@ from witnessgraph.core.evidence import validate_source_id
 from witnessgraph.core.hypothesis import EvidenceRef, Hypothesis, HypothesisStatus
 from witnessgraph.core.time_model import TimeAssertion
 from witnessgraph.core.tracked_finding import FindingStatus, TrackedGapFinding
+from witnessgraph.core.tracked_time_contradiction import TrackedTimeContradiction
+from witnessgraph.correlate.contradiction_tracking import track_contradictions
 from witnessgraph.correlate.contradictions import detect_time_contradictions
 from witnessgraph.correlate.gaps import DEFAULT_MIN_CORROBORATING_EVENTS, find_gaps
 from witnessgraph.correlate.tracking import is_still_reproduced, track_findings
@@ -37,9 +39,18 @@ findings_app = typer.Typer(
     help="Inspect and annotate persisted, tracked gap-analysis findings (v0.7).",
     no_args_is_help=True,
 )
+contradiction_findings_app = typer.Typer(
+    help=(
+        "Inspect and annotate persisted, tracked time-contradiction findings "
+        "(v0.8). Structurally separate from `findings` -- a contradiction id "
+        "is never looked up in the gap-finding table, and vice versa."
+    ),
+    no_args_is_help=True,
+)
 app.add_typer(entities_app, name="entities")
 app.add_typer(hypothesis_app, name="hypothesis")
 app.add_typer(findings_app, name="findings")
+app.add_typer(contradiction_findings_app, name="contradiction-findings")
 
 
 def _resolve_evidence_ref(case: Case, ref_id: str) -> EvidenceRef:
@@ -409,20 +420,48 @@ def verify(
 
 
 @app.command()
-def contradictions(case_dir: Path) -> None:
+def contradictions(
+    case_dir: Path = typer.Argument(..., help="Case directory to analyze."),
+    track: bool = typer.Option(
+        False,
+        "--track",
+        help=(
+            "Optional (v0.8): after reporting, persist each contradiction "
+            "found above as a tracked contradiction (see "
+            "`witnessgraph contradiction-findings`). Mechanical discovery "
+            "only -- no analyst identity is accepted or required here; a "
+            "freshly tracked contradiction starts unannotated (status "
+            "'open'). A contradiction already tracked from a prior run is "
+            "left completely unchanged, including any existing annotation. "
+            "Omitting this flag reproduces pre-v0.8 behavior exactly: "
+            "nothing is persisted."
+        ),
+    ),
+) -> None:
     """Report structural TimeAssertion contradictions found in a case."""
     case = Case.open(case_dir)
+    # The full, read-only detection always completes before any
+    # persistence is attempted -- see track_contradictions's docstring.
     found = detect_time_contradictions(case.store)
-    case.close()
     if not found:
         typer.echo("no contradictions found")
-        return
     for c in found:
         typer.echo(
             f"event {c.subject_event_id}: "
             f"{c.assertion_a.value.isoformat()} ({c.assertion_a.source_evidence_id}) vs "
             f"{c.assertion_b.value.isoformat()} ({c.assertion_b.source_evidence_id})"
         )
+    if track:
+        # Persistence only, after the complete read-only detection above --
+        # one transaction covers every new row this invocation creates.
+        with case.transaction():
+            outcomes = track_contradictions(case.store, found)
+        new_count = sum(1 for o in outcomes if o.newly_created)
+        already_tracked = len(outcomes) - new_count
+        typer.echo(
+            f"tracked: {new_count} new contradiction(s), {already_tracked} already tracked"
+        )
+    case.close()
 
 
 @app.command()
@@ -663,6 +702,118 @@ def findings_ack(
     case.close()
     typer.echo(
         f"tracked finding {updated.id} -> {updated.status.value} (by {updated.annotated_by})"
+    )
+
+
+def _format_tracked_contradiction_summary(contradiction: TrackedTimeContradiction) -> str:
+    first_id, second_id = contradiction.assertion_ids
+    reviewed_by = (
+        f"{contradiction.status.value} by `{contradiction.annotated_by}` at "
+        f"{contradiction.annotated_at.isoformat() if contradiction.annotated_at else ''}"
+        if contradiction.annotated_by is not None
+        else "not yet reviewed"
+    )
+    return (
+        f"{contradiction.id}  event `{contradiction.subject_event_id}`  "
+        f"assertions `{first_id}`, `{second_id}`  "
+        f"status={contradiction.status.value} ({reviewed_by})"
+    )
+
+
+@contradiction_findings_app.command("list")
+def contradiction_findings_list(
+    case_dir: Path = typer.Argument(..., help="Case directory to inspect."),
+) -> None:
+    """List every tracked (persisted) time-contradiction finding.
+
+    ``status`` reflects an analyst's review process only -- ``reviewed``/
+    ``dismissed`` never mean the contradiction has been resolved,
+    adjudicated, or that either assertion is more correct. Witnessgraph
+    does not determine which disagreeing assertion is true.
+    """
+    case = Case.open(case_dir)
+    tracked = case.store.list_tracked_contradictions()
+    if not tracked:
+        typer.echo("no tracked contradictions")
+        case.close()
+        return
+    for contradiction in tracked:
+        typer.echo(_format_tracked_contradiction_summary(contradiction))
+    case.close()
+
+
+@contradiction_findings_app.command("show")
+def contradiction_findings_show(
+    case_dir: Path = typer.Argument(..., help="Case directory to inspect."),
+    contradiction_id: str = typer.Argument(
+        ..., help="Tracked contradiction id, from `contradiction-findings list`."
+    ),
+) -> None:
+    """Show the full detail of one tracked contradiction."""
+    case = Case.open(case_dir)
+    contradiction = case.store.get_tracked_contradiction(contradiction_id)
+    if contradiction is None:
+        case.close()
+        typer.echo(f"no such tracked contradiction: {contradiction_id}", err=True)
+        raise typer.Exit(1)
+    case.close()
+    typer.echo(contradiction.model_dump_json(indent=2))
+
+
+@contradiction_findings_app.command("ack")
+def contradiction_findings_ack(
+    case_dir: Path = typer.Argument(..., help="Case directory to modify."),
+    contradiction_id: str = typer.Argument(
+        ..., help="Tracked contradiction id, from `contradiction-findings list`."
+    ),
+    status: FindingStatus = typer.Option(
+        ..., "--status", help="New review status: open, reviewed, or dismissed."
+    ),
+    by: str = typer.Option(
+        ...,
+        "--by",
+        help=(
+            "Required: the analyst identity performing this review. There "
+            "is no default -- an analyst identity is never invented or "
+            "inferred by this tool. Must not be blank or whitespace-only."
+        ),
+    ),
+    note: str | None = typer.Option(
+        None, "--note", help="Optional free-text note explaining this review decision."
+    ),
+) -> None:
+    """Replace a tracked contradiction's current review annotation.
+
+    This REPLACES the existing status/attribution/note; it does not
+    create a history record. There is no history table anywhere in this
+    feature -- the previous status, attribution, and note are permanently
+    discarded, not archived, once this command runs. A ``reviewed``/
+    ``dismissed`` status never means the contradiction has been resolved,
+    adjudicated, or that either assertion is more correct -- Witnessgraph
+    does not determine which disagreeing assertion is true.
+    """
+    if not by.strip():
+        raise typer.BadParameter(
+            "must not be blank or whitespace-only -- an analyst identity is "
+            "never invented or inferred by this tool",
+            param_hint="--by",
+        )
+    case = Case.open(case_dir)
+    try:
+        updated = case.store.annotate_tracked_contradiction(
+            contradiction_id,
+            status=status,
+            annotated_by=by,
+            annotated_at=datetime.now(UTC),
+            note=note,
+        )
+    except ValueError:
+        case.close()
+        typer.echo(f"no such tracked contradiction: {contradiction_id}", err=True)
+        raise typer.Exit(1) from None
+    case.close()
+    typer.echo(
+        f"tracked contradiction {updated.id} -> {updated.status.value} (by {updated.annotated_by})"
     )
 
 
