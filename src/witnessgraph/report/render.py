@@ -287,10 +287,22 @@ def _render_integrity_summary(
     recomputed_manifest: ProvenanceManifest,
     recorded_manifest: ProvenanceManifest | None,
 ) -> str:
+    # Same-version formatting deliberately matches v0.2 byte-for-byte (no
+    # manifest_version annotation) -- only a genuine version mismatch gets
+    # the extra, explicit version disclosure. See docs/phase3-v0.3-design.md
+    # §11 and the review that flagged unconditionally showing the version as
+    # a broader-than-required v0.2 report compatibility break.
     lines = ["## Integrity Summary", ""]
     lines.append(f"Recomputed manifest hash: `{recomputed_manifest.manifest_hash}`")
     if recorded_manifest is None:
         lines.append("Recorded manifest hash: (no recorded manifest)")
+    elif recorded_manifest.manifest_version != recomputed_manifest.manifest_version:
+        lines.append(f"Recorded manifest hash: `{recorded_manifest.manifest_hash}`")
+        lines.append(
+            "Verdict: NOT COMPARABLE (manifest algorithm version differs: "
+            f"recorded=v{recorded_manifest.manifest_version}, "
+            f"recomputed=v{recomputed_manifest.manifest_version})"
+        )
     else:
         lines.append(f"Recorded manifest hash: `{recorded_manifest.manifest_hash}`")
         matches = recomputed_manifest.manifest_hash == recorded_manifest.manifest_hash

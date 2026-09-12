@@ -33,9 +33,9 @@ class JsonlAdapter:
 
     def ingest(
         self, source: SourceDescriptor, *, collected_at: datetime
-    ) -> Iterator[tuple[EvidenceItem, NormalizedEvent | None]]:
-        raw_bytes = source.path.read_bytes()
-        for line_no, raw_line, line in iter_raw_lines(raw_bytes):
+    ) -> Iterator[tuple[EvidenceItem, NormalizedEvent | None, bytes]]:
+        file_bytes = source.path.read_bytes()
+        for line_no, raw_line, line in iter_raw_lines(file_bytes):
             if not raw_line.strip():
                 continue
 
@@ -58,11 +58,11 @@ class JsonlAdapter:
             if isinstance(obj, dict):
                 event_type = str(obj.get("event_type", "unknown"))
                 attributes = {str(k): str(v) for k, v in obj.items()}
-                normalized = NormalizedEvent(
+                normalized = NormalizedEvent.create(
                     event_type=event_type,
                     attributes=attributes,
                     derived_from=(evidence.id,),
                     created_at=collected_at,
                 )
 
-            yield evidence, normalized
+            yield evidence, normalized, raw_line

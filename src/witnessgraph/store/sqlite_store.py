@@ -3,16 +3,22 @@
 See DESIGN.md principle 6: ``db_path`` and blob ``root`` are always local
 filesystem paths; nothing here opens a socket.
 
-Known limitation (see SECURITY.md for the full explanation): each ``put_*``
-call is its own committed write. A multi-record ingest is not wrapped in a
-single transaction, so a process killed mid-ingest can leave a case with
-some, but not all, of a source's records -- there is no atomicity guarantee
-across a batch of writes in v0.1.
+See docs/phase3-v0.3-design.md §8: ``transaction()`` lets a caller (in
+practice, ``witnessgraph.ingest.pipeline.ingest_source``) group multiple
+``put_*`` calls into one atomic SQLite transaction, committed only once
+the whole group succeeds and rolled back in full on any exception --
+closing the crash-atomicity gap this module's docstring used to describe
+as a known limitation of v0.1. Outside of an explicit ``transaction()``
+block, each ``put_*`` call still commits immediately on its own, exactly
+as in v0.1/v0.2, so every other caller (``entities create``,
+``hypothesis propose``, etc.) is unaffected.
 """
 
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from witnessgraph.core.entities import Entity
@@ -29,6 +35,33 @@ CREATE TABLE IF NOT EXISTS entities (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS time_assertions (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS hypotheses (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 """
+
+
+class NormalizedEventConflictError(RuntimeError):
+    """Raised when an incoming NormalizedEvent shares an id with a stored one
+    but its content is not the same, aside from ``created_at``.
+
+    Content-addressing guarantees that ``event_type``/``attributes``/
+    ``derived_from`` already match on an id collision (barring a SHA-256
+    collision, out of scope). The one field this cannot guarantee is
+    ``entity_ids``, which is deliberately excluded from identity (see
+    ``NormalizedEvent.identity_hash``) -- so a real conflict here means an
+    incoming record disagrees with the stored one on ``entity_ids`` (or,
+    in principle, on an id collision that should be practically
+    impossible). Either way this is a genuine data-integrity conflict,
+    never something to silently discard or silently merge -- see
+    docs/phase3-v0.3-design.md §7's identity design and the review that
+    flagged this as an untested silent-data-loss vector.
+    """
+
+    def __init__(self, event_id: str) -> None:
+        super().__init__(
+            f"NormalizedEvent {event_id!r} already exists in the store with "
+            "different content (entity_ids or another field differs from the "
+            "incoming record, aside from created_at) -- refusing to silently "
+            "discard or merge the incoming record"
+        )
+        self.event_id = event_id
 
 
 class SqliteStore:
@@ -49,9 +82,41 @@ class SqliteStore:
         self._conn = sqlite3.connect(str(db_path))
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        self._in_transaction = False
 
     def close(self) -> None:
         self._conn.close()
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Group every ``put_*`` call made inside this block into one atomic commit.
+
+        On success, all writes made inside the block are committed
+        together, once, when the block exits. On any exception, every
+        write made inside the block is rolled back -- the store ends up
+        exactly as it was before the block started, with no partial
+        writes visible. Re-entrant: a nested ``transaction()`` call (e.g.
+        library code calling into another function that also opens one)
+        joins the outermost transaction rather than committing early.
+        """
+        if self._in_transaction:
+            yield
+            return
+        self._in_transaction = True
+        try:
+            yield
+        except BaseException:
+            self._conn.rollback()
+            raise
+        else:
+            self._conn.commit()
+        finally:
+            self._in_transaction = False
+
+    def _maybe_commit(self) -> None:
+        """Commit immediately unless a ``transaction()`` block is grouping this write."""
+        if not self._in_transaction:
+            self._conn.commit()
 
     # -- evidence -----------------------------------------------------
     def put_evidence(self, item: EvidenceItem) -> None:
@@ -75,7 +140,7 @@ class SqliteStore:
                 "INSERT INTO evidence_items (id, data) VALUES (?, ?)",
                 (item.id, item.model_dump_json()),
             )
-            self._conn.commit()
+            self._maybe_commit()
             return
 
         new_records = tuple(
@@ -91,7 +156,7 @@ class SqliteStore:
             "UPDATE evidence_items SET data = ? WHERE id = ?",
             (merged.model_dump_json(), merged.id),
         )
-        self._conn.commit()
+        self._maybe_commit()
 
     def get_evidence(self, id: str) -> EvidenceItem | None:
         row = self._conn.execute(
@@ -105,11 +170,40 @@ class SqliteStore:
 
     # -- normalized events ---------------------------------------------
     def put_normalized_event(self, event: NormalizedEvent) -> None:
+        """Store ``event``, as an insert-if-absent that verifies before it ignores.
+
+        See docs/phase3-v0.3-design.md §6.2/§21.6: a v0.3 ``.create()``-built
+        ``NormalizedEvent``'s id is itself a content hash of its
+        identity-relevant fields (``event_type``/``attributes``/
+        ``derived_from``), so those three fields are already guaranteed
+        equal on an id collision. The one field this cannot guarantee is
+        ``entity_ids`` (deliberately excluded from identity), plus
+        ``created_at`` (also excluded, and *expected* to differ between
+        two genuine re-derivations at different wall-clock times -- see
+        the reproducibility regression tests). So on a collision:
+
+        - if the incoming event is identical to the stored one in every
+          field except ``created_at``, this is a safe, idempotent no-op
+          (the ordinary re-ingest case);
+        - otherwise (most concretely: ``entity_ids`` differs, or -- in
+          principle only -- a SHA-256 collision produced two genuinely
+          different objects under the same id) this raises
+          ``NormalizedEventConflictError`` rather than silently keeping
+          the first-written version and discarding the incoming one, or
+          silently merging ``entity_ids``. Raising here, inside an active
+          ``transaction()`` block, is what triggers that transaction's
+          own rollback -- see ``SqliteStore.transaction``.
+        """
+        existing = self.get_normalized_event(event.id)
+        if existing is not None:
+            if existing.model_copy(update={"created_at": event.created_at}) != event:
+                raise NormalizedEventConflictError(event.id)
+            return  # identical aside from created_at -- safe, idempotent no-op
         self._conn.execute(
-            "INSERT OR REPLACE INTO normalized_events (id, data) VALUES (?, ?)",
+            "INSERT INTO normalized_events (id, data) VALUES (?, ?)",
             (event.id, event.model_dump_json()),
         )
-        self._conn.commit()
+        self._maybe_commit()
 
     def get_normalized_event(self, id: str) -> NormalizedEvent | None:
         row = self._conn.execute(
@@ -127,7 +221,7 @@ class SqliteStore:
             "INSERT OR REPLACE INTO entities (id, data) VALUES (?, ?)",
             (entity.id, entity.model_dump_json()),
         )
-        self._conn.commit()
+        self._maybe_commit()
 
     def get_entity(self, id: str) -> Entity | None:
         row = self._conn.execute("SELECT data FROM entities WHERE id = ?", (id,)).fetchone()
@@ -139,11 +233,12 @@ class SqliteStore:
 
     # -- time assertions ---------------------------------------------
     def put_time_assertion(self, assertion: TimeAssertion) -> None:
+        """Store ``assertion``, as an insert-if-absent -- see ``put_normalized_event``."""
         self._conn.execute(
-            "INSERT OR REPLACE INTO time_assertions (id, data) VALUES (?, ?)",
+            "INSERT OR IGNORE INTO time_assertions (id, data) VALUES (?, ?)",
             (assertion.id, assertion.model_dump_json()),
         )
-        self._conn.commit()
+        self._maybe_commit()
 
     def list_time_assertions(self) -> list[TimeAssertion]:
         rows = self._conn.execute("SELECT data FROM time_assertions ORDER BY id").fetchall()
@@ -155,7 +250,7 @@ class SqliteStore:
             "INSERT OR REPLACE INTO hypotheses (id, data) VALUES (?, ?)",
             (hypothesis.id, hypothesis.model_dump_json()),
         )
-        self._conn.commit()
+        self._maybe_commit()
 
     def get_hypothesis(self, id: str) -> Hypothesis | None:
         row = self._conn.execute("SELECT data FROM hypotheses WHERE id = ?", (id,)).fetchone()

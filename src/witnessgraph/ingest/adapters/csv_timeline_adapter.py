@@ -45,9 +45,9 @@ class CsvTimelineAdapter:
 
     def ingest(
         self, source: SourceDescriptor, *, collected_at: datetime
-    ) -> Iterator[tuple[EvidenceItem, NormalizedEvent | None]]:
-        raw_bytes = source.path.read_bytes()
-        lines = list(iter_raw_lines(raw_bytes))
+    ) -> Iterator[tuple[EvidenceItem, NormalizedEvent | None, bytes]]:
+        file_bytes = source.path.read_bytes()
+        lines = list(iter_raw_lines(file_bytes))
 
         header_fields: list[str] | None = None
         row_no = 0
@@ -82,11 +82,11 @@ class CsvTimelineAdapter:
 
                 event_type = (attributes.get("event_type") or "unknown")
                 event_type = (event_type or "unknown").strip() or "unknown"
-                normalized = NormalizedEvent(
+                normalized = NormalizedEvent.create(
                     event_type=event_type,
                     attributes={k: v for k, v in attributes.items() if v is not None},
                     derived_from=(evidence.id,),
                     created_at=collected_at,
                 )
 
-            yield evidence, normalized
+            yield evidence, normalized, raw_line

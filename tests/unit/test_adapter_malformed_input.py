@@ -60,7 +60,7 @@ def test_invalid_utf8_line_does_not_discard_the_rest_of_the_file(
 
     # The two well-formed records (before and after the bad one) are still
     # normalized; only the middle, invalid-UTF8 one is evidence-only.
-    normalized_flags = [normalized is not None for _evidence, normalized in results]
+    normalized_flags = [normalized is not None for _evidence, normalized, _raw in results]
     assert normalized_flags == [True, False, True]
 
 
@@ -77,7 +77,7 @@ def test_invalid_utf8_evidence_is_still_exactly_content_addressed(
     path.write_bytes(raw_bytes)
 
     results = list(adapter.ingest(SourceDescriptor(path=path), collected_at=NOW))
-    bad_evidence = next(evidence for evidence, normalized in results if normalized is None)
+    bad_evidence = next(evidence for evidence, normalized, _raw in results if normalized is None)
 
     # Reconstruct the exact raw line bytes independently, and confirm the
     # evidence id is exactly sha256(those bytes) -- content-addressing is

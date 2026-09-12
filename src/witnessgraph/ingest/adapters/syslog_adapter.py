@@ -33,9 +33,9 @@ class SyslogAdapter:
 
     def ingest(
         self, source: SourceDescriptor, *, collected_at: datetime
-    ) -> Iterator[tuple[EvidenceItem, NormalizedEvent | None]]:
-        raw_bytes = source.path.read_bytes()
-        for line_no, raw_line, line in iter_raw_lines(raw_bytes):
+    ) -> Iterator[tuple[EvidenceItem, NormalizedEvent | None, bytes]]:
+        file_bytes = source.path.read_bytes()
+        for line_no, raw_line, line in iter_raw_lines(file_bytes):
             if not raw_line.strip():
                 continue
 
@@ -61,11 +61,11 @@ class SyslogAdapter:
                     # full timestamp (DESIGN.md principle 3: no silent inference).
                     "raw_timestamp": f"{fields['month']} {fields['day']} {fields['time']}",
                 }
-                normalized = NormalizedEvent(
+                normalized = NormalizedEvent.create(
                     event_type="syslog_line",
                     attributes=attributes,
                     derived_from=(evidence.id,),
                     created_at=collected_at,
                 )
 
-            yield evidence, normalized
+            yield evidence, normalized, raw_line

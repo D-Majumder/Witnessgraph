@@ -19,7 +19,7 @@ from witnessgraph.ingest.base import SourceDescriptor
 from witnessgraph.ingest.pipeline import ingest_source
 from witnessgraph.ingest.registry import get_adapter, list_adapters
 from witnessgraph.portable import export_case, import_case
-from witnessgraph.replay.replay import replay_and_verify
+from witnessgraph.replay.replay import ReplayResult, replay_and_verify
 from witnessgraph.report.render import render_report_bytes
 from witnessgraph.store.case import Case
 
@@ -39,6 +39,19 @@ def _resolve_evidence_ref(case: Case, ref_id: str) -> EvidenceRef:
     if case.store.get_normalized_event(ref_id) is not None:
         return EvidenceRef(kind="normalized_event", id=ref_id)
     raise typer.BadParameter(f"{ref_id!r} is not a known EvidenceItem or NormalizedEvent id")
+
+
+def _replay_verdict(result: ReplayResult) -> str:
+    """Render a ReplayResult's outcome, distinguishing a real version mismatch
+    from MATCH/MISMATCH -- see docs/phase3-v0.3-design.md §11."""
+    if not result.version_comparable:
+        assert result.recorded_manifest is not None  # only reachable when both manifests exist
+        return (
+            "NOT COMPARABLE (manifest algorithm version differs: "
+            f"recorded=v{result.recorded_manifest.manifest_version}, "
+            f"recomputed=v{result.recomputed_manifest.manifest_version})"
+        )
+    return "MATCH" if result.matches_recorded else "MISMATCH"
 
 
 def _fail_corrupted_case(case_dir: Path) -> NoReturn:
@@ -336,7 +349,7 @@ def verify(
         typer.echo(f"recomputed manifest hash: {result.recomputed_manifest.manifest_hash}")
         if result.recorded_manifest is not None:
             typer.echo(f"recorded manifest hash:   {result.recorded_manifest.manifest_hash}")
-        typer.echo("MATCH" if result.matches_recorded else "MISMATCH")
+        typer.echo(_replay_verdict(result))
 
         if check_report:
             try:
@@ -394,7 +407,7 @@ def replay(case_dir: Path) -> None:
     typer.echo(f"recomputed manifest hash: {result.recomputed_manifest.manifest_hash}")
     if result.recorded_manifest is not None:
         typer.echo(f"recorded manifest hash:   {result.recorded_manifest.manifest_hash}")
-    typer.echo("MATCH" if result.matches_recorded else "MISMATCH")
+    typer.echo(_replay_verdict(result))
     if not result.matches_recorded:
         raise typer.Exit(1)
 

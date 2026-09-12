@@ -2,7 +2,7 @@
 
 Case: `sample-case`
 
-Recorded manifest hash: `3a66689a99bba96eeda1facca8b0336e149246e44c72ea81fadcf3ff1b344acf`
+Recorded manifest hash: `a2b0d6debbd058f286811beb9064b38af0669289a42e92b1aee142261fd79b1f`
 
 This report's own content is not covered by the manifest hash above -- see the Integrity Summary section for the exact coverage boundary.
 
@@ -74,8 +74,8 @@ This report's own content is not covered by the manifest hash above -- see the I
 
 ## Integrity Summary
 
-Recomputed manifest hash: `3a66689a99bba96eeda1facca8b0336e149246e44c72ea81fadcf3ff1b344acf`
-Recorded manifest hash: `3a66689a99bba96eeda1facca8b0336e149246e44c72ea81fadcf3ff1b344acf`
+Recomputed manifest hash: `a2b0d6debbd058f286811beb9064b38af0669289a42e92b1aee142261fd79b1f`
+Recorded manifest hash: `a2b0d6debbd058f286811beb9064b38af0669289a42e92b1aee142261fd79b1f`
 Verdict: MATCH
 
 This verdict covers only: EvidenceItem.raw_content_hash for every evidence item, and the full canonical content of every NormalizedEvent, Entity, TimeAssertion, and Hypothesis. It does NOT cover the following fields displayed elsewhere in this report, which are excluded from the manifest hash by design: EvidenceItem.chain_of_custody, EvidenceItem.collected_at, EvidenceItem.source_locator, EvidenceItem.source_adapter, EvidenceItem.adapter_version, EvidenceItem.ingest_parameters, and EvidenceItem.observed_at. A MATCH verdict does not, by itself, prove those specific fields are untampered.

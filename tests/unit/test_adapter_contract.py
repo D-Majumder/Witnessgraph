@@ -46,7 +46,7 @@ def test_ingest_yields_at_least_one_evidence_item(adapter, source_path: Path) ->
     source = SourceDescriptor(path=source_path)
     results = list(adapter.ingest(source, collected_at=NOW))
     assert len(results) > 0
-    for evidence, _normalized in results:
+    for evidence, _normalized, _raw_bytes in results:
         assert evidence.source_adapter == adapter.adapter_id
         assert evidence.adapter_version == adapter.adapter_version
 
@@ -56,7 +56,7 @@ def test_ingest_yields_at_least_one_normalized_event(adapter, source_path: Path)
     """Every built-in adapter's fixture contains at least one line it can normalize."""
     source = SourceDescriptor(path=source_path)
     results = list(adapter.ingest(source, collected_at=NOW))
-    assert any(normalized is not None for _evidence, normalized in results)
+    assert any(normalized is not None for _evidence, normalized, _raw_bytes in results)
 
 
 @adapters_with_unparseable_lines
@@ -66,20 +66,33 @@ def test_unparseable_lines_still_become_evidence(adapter, source_path: Path) -> 
     when it cannot be normalized)."""
     source = SourceDescriptor(path=source_path)
     results = list(adapter.ingest(source, collected_at=NOW))
-    assert any(normalized is None for _evidence, normalized in results)
+    assert any(normalized is None for _evidence, normalized, _raw_bytes in results)
 
 
 @all_adapters
 def test_ingest_is_deterministic(adapter, source_path: Path) -> None:
     source = SourceDescriptor(path=source_path)
-    run_1 = [e.id for e, _ in adapter.ingest(source, collected_at=NOW)]
-    run_2 = [e.id for e, _ in adapter.ingest(source, collected_at=NOW)]
+    run_1 = [e.id for e, _, _ in adapter.ingest(source, collected_at=NOW)]
+    run_2 = [e.id for e, _, _ in adapter.ingest(source, collected_at=NOW)]
     assert run_1 == run_2
 
 
 @all_adapters
 def test_every_normalized_event_traces_back_to_its_evidence(adapter, source_path: Path) -> None:
     source = SourceDescriptor(path=source_path)
-    for evidence, normalized in adapter.ingest(source, collected_at=NOW):
+    for evidence, normalized, _raw_bytes in adapter.ingest(source, collected_at=NOW):
         if normalized is not None:
             assert evidence.id in normalized.derived_from
+
+
+@all_adapters
+def test_yielded_raw_bytes_match_evidence_content_hash(adapter, source_path: Path) -> None:
+    """The raw_bytes yielded alongside each EvidenceItem must be exactly the
+    bytes that item is content-addressed from -- this is what lets the
+    ingestion pipeline persist them into the blob store under the same
+    address (see docs/phase3-v0.3-design.md §6.7/§8)."""
+    from witnessgraph.core.ids import sha256_hex
+
+    source = SourceDescriptor(path=source_path)
+    for evidence, _normalized, raw_bytes in adapter.ingest(source, collected_at=NOW):
+        assert sha256_hex(raw_bytes) == evidence.raw_content_hash

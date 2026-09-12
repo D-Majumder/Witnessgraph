@@ -27,7 +27,15 @@ class SourceDescriptor:
 
 
 class EvidenceAdapter(Protocol):
-    """The contract every ingestion adapter must satisfy."""
+    """The contract every ingestion adapter must satisfy.
+
+    ``ingest`` yields one ``(evidence, normalized, raw_bytes)`` triple per
+    record. ``raw_bytes`` is exactly the byte string ``evidence`` was
+    built from (i.e. ``sha256_hex(raw_bytes) == evidence.raw_content_hash``)
+    -- see docs/phase3-v0.3-design.md §6.7/§8: the pipeline needs the raw
+    bytes themselves, not just their hash, to persist them into the
+    case's content-addressed blob store.
+    """
 
     adapter_id: str
     adapter_version: str
@@ -36,4 +44,4 @@ class EvidenceAdapter(Protocol):
 
     def ingest(
         self, source: SourceDescriptor, *, collected_at: datetime
-    ) -> Iterator[tuple[EvidenceItem, NormalizedEvent | None]]: ...
+    ) -> Iterator[tuple[EvidenceItem, NormalizedEvent | None, bytes]]: ...

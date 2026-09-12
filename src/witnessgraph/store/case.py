@@ -10,6 +10,8 @@ and it is everything needed to reopen and verify the investigation. See
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from witnessgraph.core.provenance import ProvenanceManifest, compute_manifest
@@ -43,6 +45,20 @@ class Case:
 
     def close(self) -> None:
         self.store.close()
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Group every ``store.put_*`` call made inside this block into one atomic commit.
+
+        See ``SqliteStore.transaction`` (this delegates to it directly).
+        Only covers the SQLite metadata store -- blob writes to
+        ``self.blobs`` are a separate filesystem substrate that cannot
+        share this transaction; see
+        ``witnessgraph.ingest.pipeline.ingest_source`` for the
+        blob-before-SQL ordering rule that makes that safe anyway.
+        """
+        with self.store.transaction():
+            yield
 
     def compute_manifest(self) -> ProvenanceManifest:
         return compute_manifest(self.store)
