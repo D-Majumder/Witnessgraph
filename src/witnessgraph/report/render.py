@@ -290,16 +290,39 @@ def _render_contradictions(store: Store) -> str:
     return "\n".join(lines)
 
 
+def _format_resolved_source(source: str, refinement: str | None) -> str:
+    """Render a resolved gap-analysis source for the report (v0.6).
+
+    ``refinement`` is already neutralized by ``find_gaps`` (equality-safe)
+    before this is ever called; it is additionally passed through
+    ``_untrusted`` here for the same display-safety/code-span treatment
+    every other untrusted string in this report already gets.
+    """
+    base = _untrusted(source)
+    if refinement is None:
+        return base
+    return f"{base} (refined: {_untrusted(refinement)})"
+
+
 def _render_coverage_gaps(result: GapAnalysisResult) -> str:
     lines = ["## Coverage Gaps", ""]
+    if result.refine_source_by_attribute is not None:
+        lines.append(
+            f"Source identity refined by attribute {_untrusted(result.refine_source_by_attribute)} "
+            "-- this does not prove physical source identity; the attribute value comes "
+            "from ingested, untrusted evidence content."
+        )
+        lines.append("")
     if not result.findings:
         lines.append("(none)")
     else:
         for f in result.findings:
+            absent_label = _format_resolved_source(f.absent_source, f.absent_source_refinement)
+            present_label = _format_resolved_source(f.present_source, f.present_source_refinement)
             lines.append(
-                f"- Source {_untrusted(f.absent_source)} has no observed evidence in "
+                f"- Source {absent_label} has no observed evidence in "
                 f"[{_format_datetime(f.interval_start)}, {_format_datetime(f.interval_end)}) "
-                f"while source {_untrusted(f.present_source)} has corroborating activity"
+                f"while source {present_label} has corroborating activity"
             )
             lines.append(
                 f"  - bounded by time assertions `{f.bounding_absent_assertion_ids[0]}`, "
@@ -307,15 +330,26 @@ def _render_coverage_gaps(result: GapAnalysisResult) -> str:
             )
             corroborating = ", ".join(f"`{cid}`" for cid in f.corroborating_time_assertion_ids)
             lines.append(f"  - corroborating time assertions: {corroborating}")
-    lines.append("")
-    lines.append(
+    excluded_summary = (
         f"Excluded from analysis: {result.excluded_no_time_assertion} normalized event(s) "
         f"with no time assertion, {result.excluded_no_declared_source} time assertion(s) "
         f"with no declared source, {result.excluded_ambiguous_source} time assertion(s) "
-        "with an ambiguous declared source. A finding above is never a claim that an "
-        "event should have existed -- only that a different, independently-declared "
-        "source has observed activity in the same interval while this source has none."
+        "with an ambiguous declared source"
     )
+    if result.refine_source_by_attribute is not None:
+        excluded_summary += (
+            f", {result.excluded_unrefined_fallback_with_refined_sibling} time assertion(s) "
+            "in an unrefined fallback bucket excluded from comparison against a refined "
+            "sibling group of the same coarse source (still comparable against genuinely "
+            "different coarse sources)"
+        )
+    excluded_summary += (
+        ". A finding above is never a claim that an event should have existed -- only "
+        "that a different, independently-declared source has observed activity in the "
+        "same interval while this source has none."
+    )
+    lines.append("")
+    lines.append(excluded_summary)
     return "\n".join(lines)
 
 

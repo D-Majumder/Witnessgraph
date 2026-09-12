@@ -43,6 +43,18 @@ def _resolve_evidence_ref(case: Case, ref_id: str) -> EvidenceRef:
     raise typer.BadParameter(f"{ref_id!r} is not a known EvidenceItem or NormalizedEvent id")
 
 
+def _format_resolved_source_plain(source: str, refinement: str | None) -> str:
+    """Render a resolved gap-analysis source for plain CLI text (v0.6).
+
+    ``refinement`` is already neutralized by ``find_gaps`` before this is
+    called, so no further escaping is needed for plain terminal output --
+    see ``correlate.gaps._neutralize_for_grouping``.
+    """
+    if refinement is None:
+        return source
+    return f"{source} (refined: {refinement})"
+
+
 def _replay_verdict(result: ReplayResult) -> str:
     """Render a ReplayResult's outcome, distinguishing a real version mismatch
     from MATCH/MISMATCH -- see docs/phase3-v0.3-design.md §11."""
@@ -423,6 +435,18 @@ def gaps(
         "--min-corroborating-events",
         help="Minimum corroborating events required from the present source.",
     ),
+    refine_source_by_attribute: str | None = typer.Option(
+        None,
+        "--refine-source-by-attribute",
+        help=(
+            "Optional (v0.6): subdivide each declared source by this "
+            "NormalizedEvent attribute (e.g. 'host'). Never overrides or "
+            "invents a coarse source; a record missing the attribute falls "
+            "back to its coarse source. The value comes from ingested, "
+            "untrusted content and does NOT prove physical source identity. "
+            "Omitting this reproduces v0.5 behavior exactly."
+        ),
+    ),
 ) -> None:
     """Report deterministic cross-source evidence coverage gaps.
 
@@ -445,26 +469,44 @@ def gaps(
         case.store,
         min_gap_seconds=min_gap_seconds,
         min_corroborating_events=min_corroborating_events,
+        refine_source_by_attribute=refine_source_by_attribute,
     )
     case.close()
+    if result.refine_source_by_attribute is not None:
+        typer.echo(
+            f"source identity refined by attribute `{result.refine_source_by_attribute}` "
+            "-- this does not prove physical source identity"
+        )
     if not result.findings:
         typer.echo("no coverage gaps found")
     for f in result.findings:
+        absent_label = _format_resolved_source_plain(f.absent_source, f.absent_source_refinement)
+        present_label = _format_resolved_source_plain(
+            f.present_source, f.present_source_refinement
+        )
         typer.echo(
-            f"source `{f.absent_source}` has no observed evidence in "
+            f"source `{absent_label}` has no observed evidence in "
             f"[{f.interval_start.isoformat()}, {f.interval_end.isoformat()}) "
-            f"while source `{f.present_source}` has corroborating activity "
+            f"while source `{present_label}` has corroborating activity "
             f"(bounded by time assertions {f.bounding_absent_assertion_ids[0]}.."
             f"{f.bounding_absent_assertion_ids[1]}; corroborated by "
             f"{len(f.corroborating_time_assertion_ids)} assertion(s): "
             f"{', '.join(f.corroborating_time_assertion_ids)})"
         )
-    typer.echo(
+    excluded_summary = (
         f"excluded: {result.excluded_no_time_assertion} normalized event(s) with no time "
         f"assertion, {result.excluded_no_declared_source} time assertion(s) with no "
         f"declared source, {result.excluded_ambiguous_source} time assertion(s) with "
         "ambiguous declared source"
     )
+    if result.refine_source_by_attribute is not None:
+        excluded_summary += (
+            f", {result.excluded_unrefined_fallback_with_refined_sibling} time assertion(s) "
+            "in an unrefined fallback bucket excluded from comparison against a refined "
+            "sibling group of the same coarse source (still comparable against genuinely "
+            "different coarse sources)"
+        )
+    typer.echo(excluded_summary)
 
 
 @app.command()
