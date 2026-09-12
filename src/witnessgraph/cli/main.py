@@ -27,6 +27,7 @@ from witnessgraph.ingest.registry import get_adapter, list_adapters
 from witnessgraph.portable import export_case, import_case
 from witnessgraph.replay.replay import ReplayResult, replay_and_verify
 from witnessgraph.report.render import render_report_bytes
+from witnessgraph.report.render_json import render_report_json_bytes
 from witnessgraph.store.case import Case
 
 app = typer.Typer(
@@ -327,17 +328,28 @@ def report(
         None, "--output", help="Write the report to this file instead of stdout."
     ),
     output_format: str = typer.Option(
-        "markdown", "--format", help="Report output format. Only 'markdown' is supported."
+        "markdown",
+        "--format",
+        help=(
+            "Report output format: 'markdown' (default, human-readable) or "
+            "'json' (v0.9, machine-readable -- see `witnessgraph report "
+            "--format json`'s output for the schema; JSON output is NOT "
+            "passed through the same display-safety neutralization "
+            "Markdown output is -- see report.render_json's module "
+            "docstring)."
+        ),
     ),
 ) -> None:
-    """Render a case's full investigative content as a single, deterministic Markdown document.
+    """Render a case's full investigative content as a single, deterministic
+    Markdown (default) or JSON document.
 
     Writes to stdout by default; pass --output to write the same
-    deterministic bytes to a file instead.
+    deterministic bytes to a file instead -- stdout and --output always
+    contain byte-identical content for a given format.
     """
-    if output_format != "markdown":
+    if output_format not in ("markdown", "json"):
         raise typer.BadParameter(
-            f"unsupported --format {output_format!r}; only 'markdown' is supported"
+            f"unsupported --format {output_format!r}; only 'markdown' or 'json' is supported"
         )
     if output is not None and output.exists():
         typer.echo(f"error: {output} already exists", err=True)
@@ -350,12 +362,20 @@ def report(
 
     try:
         try:
-            report_bytes = render_report_bytes(
-                case_name=case_dir.name,
-                store=case.store,
-                recomputed_manifest=case.compute_manifest(),
-                recorded_manifest=case.load_recorded_manifest(),
-            )
+            if output_format == "json":
+                report_bytes = render_report_json_bytes(
+                    case_name=case_dir.name,
+                    store=case.store,
+                    recomputed_manifest=case.compute_manifest(),
+                    recorded_manifest=case.load_recorded_manifest(),
+                )
+            else:
+                report_bytes = render_report_bytes(
+                    case_name=case_dir.name,
+                    store=case.store,
+                    recomputed_manifest=case.compute_manifest(),
+                    recorded_manifest=case.load_recorded_manifest(),
+                )
         except sqlite3.DatabaseError:
             _fail_corrupted_case(case_dir)
     finally:
