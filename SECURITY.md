@@ -18,37 +18,34 @@ accepted into this codebase.
 - **No credential harvesting or exploitation capability**, automated or
   otherwise.
 
-## Known limitation: ingestion is not crash-atomic
+## Ingestion crash atomicity
 
-Ingesting a source (`witnessgraph ingest ...`) writes each evidence item,
-normalized event, and time assertion to the SQLite metadata store as its
-own committed write, one at a time, as the adapter produces them. If the
-process is killed partway through ingesting a multi-record source (a
-crash, an out-of-memory kill, `Ctrl-C`), the case will contain whatever
-records were written before the interruption and nothing after it --
-**a genuinely partial case, not an all-or-nothing outcome.**
+Ingesting a source (`witnessgraph ingest ...`) wraps every evidence item,
+normalized event, and time assertion that one adapter invocation produces
+into a single SQLite transaction (`witnessgraph.ingest.pipeline.ingest_source`,
+via `Case.transaction()`). **One `ingest` invocation is the atomic unit**:
+if the process is killed partway through ingesting a multi-record source
+(a crash, an out-of-memory kill, `Ctrl-C`), the SQLite metadata for that
+invocation is rolled back in full rather than left partially committed.
 
-This is a real, current limitation, not a hypothetical one: v0.1 does not
-wrap a multi-record ingest in a single database transaction. Nothing else
-in this codebase should be read as claiming otherwise. Two things *are*
-still true even in a partially-populated case: every record that *is*
-present is exactly as trustworthy as in a complete case (content-addressed,
-immutable), and `witnessgraph replay` will accurately reflect whatever
-partial state actually exists rather than silently hiding it — but the
-case as a whole is not a complete, faithful copy of the source until a
-full ingest run has finished without interruption.
+The one piece of state that sits outside this transaction is the
+content-addressed blob store: `case.blobs.put(raw_bytes)` is called for
+each record *before* that record's SQLite writes, since a filesystem
+write cannot itself participate in a SQLite transaction. This ordering is
+deliberate and safe: `FileBlobStore.put` is self-idempotent
+(content-addressed, stage-to-temp-then-atomic-rename), so a crash after a
+blob write but before the SQL transaction commits leaves at most a
+harmless orphaned blob file with no metadata row pointing at it yet —
+never a metadata row referencing a blob that was never written.
 
-**Do not simply re-run an interrupted ingest as a fix.** Re-ingesting the
-same source is a safe, non-duplicating no-op only at the raw-evidence
-layer (`EvidenceItem` ids are content hashes, and the store merges rather
-than duplicates — see its docstring). `NormalizedEvent` and
-`TimeAssertion` ids are freshly generated on every construction, not
-derived from content, so re-running ingest against a source that was
-already partially ingested will currently create *duplicate* normalized
-events and time assertions for whatever portion succeeded the first time.
-There is no dedup step for those object types in v0.1. If an ingest is
-interrupted, the safest recovery today is to discard the partial case
-directory and start over from an empty one, not to re-run ingest in place.
+**Re-running an interrupted ingest is safe.** Because `EvidenceItem`,
+`NormalizedEvent`, and `TimeAssertion` ids are all content-derived
+(re-deriving the same input reproduces the same id) and blob writes are
+idempotent, simply re-running `witnessgraph ingest` with the same source
+after an interruption converges rather than duplicates: already-committed
+records are re-derived to the same ids/blobs and become no-ops, and only
+genuinely new records are newly written. There is no need to discard and
+restart from an empty case directory.
 
 ## Sensitive evidence — read this before ingesting real data
 

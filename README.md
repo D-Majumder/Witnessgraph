@@ -66,12 +66,26 @@ users must understand before relying on its output:
   physical source identity — it only compares the labels an analyst
   supplied. If two genuinely distinct systems are accidentally given the
   same `source_id`, their evidence is merged into one source group, and
-  a real coverage gap in either one can be silently masked.
+  a real coverage gap in either one can be silently masked. An optional,
+  opt-in mitigation exists: `--refine-source-by-attribute <key>`
+  subdivides each declared `source_id` group by an existing
+  `NormalizedEvent` attribute (e.g. `host`), for the specific case where
+  one declared source actually covers several distinct real systems. It
+  never overrides, replaces, or invents a `source_id` — it only
+  subdivides one that was already declared — and a record with no value
+  for the given attribute falls back to its coarse `source_id` group
+  unchanged. The attribute value is ingested, untrusted content and
+  receives no independent verification, so refinement **does not prove
+  physical source identity**; it does not automatically detect or
+  resolve `source_id` collisions on its own, since it only helps when
+  records already carry a suitable distinguishing attribute and an
+  analyst explicitly requests it. Omitting the option reproduces the
+  unmitigated behavior above exactly.
 - **Clock skew.** Gap analysis operates entirely on recorded timestamps
   and does not estimate or correct for clock offsets between sources.
   Skew between an absent and a corroborating source can affect both
   cross-source corroboration and the attribution of a finding to a
-  specific interval.
+  specific interval. This remains unresolved and is out of scope.
 
 A finding is a structural statement about the absence of *recorded*
 evidence relative to another source, never a claim about what did or
