@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 from witnessgraph.core.events import NormalizedEvent
 from witnessgraph.core.time_model import TimeAssertion
 from witnessgraph.correlate.contradictions import TimeContradiction, detect_time_contradictions
+from witnessgraph.correlate.gaps import GapAnalysisResult
 
 if TYPE_CHECKING:
     from witnessgraph.core.provenance import ProvenanceManifest
@@ -289,6 +290,35 @@ def _render_contradictions(store: Store) -> str:
     return "\n".join(lines)
 
 
+def _render_coverage_gaps(result: GapAnalysisResult) -> str:
+    lines = ["## Coverage Gaps", ""]
+    if not result.findings:
+        lines.append("(none)")
+    else:
+        for f in result.findings:
+            lines.append(
+                f"- Source {_untrusted(f.absent_source)} has no observed evidence in "
+                f"[{_format_datetime(f.interval_start)}, {_format_datetime(f.interval_end)}) "
+                f"while source {_untrusted(f.present_source)} has corroborating activity"
+            )
+            lines.append(
+                f"  - bounded by time assertions `{f.bounding_absent_assertion_ids[0]}`, "
+                f"`{f.bounding_absent_assertion_ids[1]}`"
+            )
+            corroborating = ", ".join(f"`{cid}`" for cid in f.corroborating_time_assertion_ids)
+            lines.append(f"  - corroborating time assertions: {corroborating}")
+    lines.append("")
+    lines.append(
+        f"Excluded from analysis: {result.excluded_no_time_assertion} normalized event(s) "
+        f"with no time assertion, {result.excluded_no_declared_source} time assertion(s) "
+        f"with no declared source, {result.excluded_ambiguous_source} time assertion(s) "
+        "with an ambiguous declared source. A finding above is never a claim that an "
+        "event should have existed -- only that a different, independently-declared "
+        "source has observed activity in the same interval while this source has none."
+    )
+    return "\n".join(lines)
+
+
 def _render_integrity_summary(
     recomputed_manifest: ProvenanceManifest,
     recorded_manifest: ProvenanceManifest | None,
@@ -335,12 +365,22 @@ def render_report(
     store: Store,
     recomputed_manifest: ProvenanceManifest,
     recorded_manifest: ProvenanceManifest | None,
+    gap_analysis: GapAnalysisResult | None = None,
 ) -> str:
     """Render a case's full, deterministic Markdown report as a ``str``.
 
     Pure: no filesystem access, no ``Path`` accepted, no wall-clock reads.
     ``case_name`` is a plain string the caller derives from ``case_dir.name``
     -- this module never touches the filesystem to determine it.
+
+    ``gap_analysis``, if given, adds a ``## Coverage Gaps`` section (see
+    ``witnessgraph.correlate.gaps`` and
+    docs/phase5-v0.5-gap-analysis-design.md §20). Omitted entirely (not
+    even rendered as empty) when ``None``, since gap analysis requires an
+    explicit, no-default ``min_gap_seconds`` threshold this module has no
+    basis to choose -- "not run" and "run, found nothing" are kept
+    visibly distinct. Existing callers passing no ``gap_analysis`` see
+    byte-identical output to before this parameter existed.
     """
     sections = [
         _render_header(case_name, recorded_manifest),
@@ -349,8 +389,10 @@ def render_report(
         _render_entities(store),
         _render_hypotheses(store),
         _render_contradictions(store),
-        _render_integrity_summary(recomputed_manifest, recorded_manifest),
     ]
+    if gap_analysis is not None:
+        sections.append(_render_coverage_gaps(gap_analysis))
+    sections.append(_render_integrity_summary(recomputed_manifest, recorded_manifest))
     return "\n\n".join(sections) + "\n"
 
 
@@ -360,6 +402,7 @@ def render_report_bytes(
     store: Store,
     recomputed_manifest: ProvenanceManifest,
     recorded_manifest: ProvenanceManifest | None,
+    gap_analysis: GapAnalysisResult | None = None,
 ) -> bytes:
     """The only place UTF-8 encoding happens for report output.
 
@@ -371,5 +414,6 @@ def render_report_bytes(
         store=store,
         recomputed_manifest=recomputed_manifest,
         recorded_manifest=recorded_manifest,
+        gap_analysis=gap_analysis,
     )
     return text.encode("utf-8")

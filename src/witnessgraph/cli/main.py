@@ -16,6 +16,7 @@ from witnessgraph.core.evidence import validate_source_id
 from witnessgraph.core.hypothesis import EvidenceRef, Hypothesis, HypothesisStatus
 from witnessgraph.core.time_model import TimeAssertion
 from witnessgraph.correlate.contradictions import detect_time_contradictions
+from witnessgraph.correlate.gaps import DEFAULT_MIN_CORROBORATING_EVENTS, find_gaps
 from witnessgraph.ingest.base import SourceDescriptor
 from witnessgraph.ingest.pipeline import ingest_source
 from witnessgraph.ingest.registry import get_adapter, list_adapters
@@ -403,6 +404,67 @@ def contradictions(case_dir: Path) -> None:
             f"{c.assertion_a.value.isoformat()} ({c.assertion_a.source_evidence_id}) vs "
             f"{c.assertion_b.value.isoformat()} ({c.assertion_b.source_evidence_id})"
         )
+
+
+@app.command()
+def gaps(
+    case_dir: Path = typer.Argument(..., help="Case directory to analyze."),
+    min_gap_seconds: float = typer.Option(
+        ...,
+        "--min-gap-seconds",
+        help=(
+            "Minimum gap duration (seconds) to report. Required -- no default is "
+            "claimed to be objectively correct; choose per case. See "
+            "docs/phase5-v0.5-gap-analysis-design.md §7/§23."
+        ),
+    ),
+    min_corroborating_events: int = typer.Option(
+        DEFAULT_MIN_CORROBORATING_EVENTS,
+        "--min-corroborating-events",
+        help="Minimum corroborating events required from the present source.",
+    ),
+) -> None:
+    """Report deterministic cross-source evidence coverage gaps.
+
+    A finding means: the given source has no observed evidence in the
+    stated interval while a different, independently-declared source has
+    corroborating activity there. This is never a claim that an event
+    should have existed -- see docs/phase5-v0.5-gap-analysis-design.md.
+    Source identity is resolved only from explicitly declared
+    ``--source-id`` values (``witnessgraph ingest --source-id``); evidence
+    with no or an ambiguous declared source is excluded, not guessed.
+    """
+    if min_corroborating_events < 1:
+        raise typer.BadParameter(
+            "must be at least 1 -- a gap can never be reported on zero corroborating "
+            "evidence (see docs/phase5-v0.5-gap-analysis-design.md §7/§23)",
+            param_hint="--min-corroborating-events",
+        )
+    case = Case.open(case_dir)
+    result = find_gaps(
+        case.store,
+        min_gap_seconds=min_gap_seconds,
+        min_corroborating_events=min_corroborating_events,
+    )
+    case.close()
+    if not result.findings:
+        typer.echo("no coverage gaps found")
+    for f in result.findings:
+        typer.echo(
+            f"source `{f.absent_source}` has no observed evidence in "
+            f"[{f.interval_start.isoformat()}, {f.interval_end.isoformat()}) "
+            f"while source `{f.present_source}` has corroborating activity "
+            f"(bounded by time assertions {f.bounding_absent_assertion_ids[0]}.."
+            f"{f.bounding_absent_assertion_ids[1]}; corroborated by "
+            f"{len(f.corroborating_time_assertion_ids)} assertion(s): "
+            f"{', '.join(f.corroborating_time_assertion_ids)})"
+        )
+    typer.echo(
+        f"excluded: {result.excluded_no_time_assertion} normalized event(s) with no time "
+        f"assertion, {result.excluded_no_declared_source} time assertion(s) with no "
+        f"declared source, {result.excluded_ambiguous_source} time assertion(s) with "
+        "ambiguous declared source"
+    )
 
 
 @app.command()
