@@ -53,3 +53,27 @@ content-addressed storage, three ingestion adapters (JSONL, CSV timeline,
 syslog), structural time-contradiction detection, and a CLI. No AI
 integration, no graph database, no web UI — see `DESIGN.md` for what is
 deliberately out of scope for this version.
+
+## Coverage gap analysis — known limitations
+
+`witnessgraph gaps <case> --min-gap-seconds <N>` reports intervals where
+one analyst-declared source (`--source-id` at ingest time) has no
+observed evidence while a different, independently-declared source has
+corroborating activity in that same interval. Two limitations apply that
+users must understand before relying on its output:
+
+- **`source_id` collisions.** Witnessgraph cannot independently verify
+  physical source identity — it only compares the labels an analyst
+  supplied. If two genuinely distinct systems are accidentally given the
+  same `source_id`, their evidence is merged into one source group, and
+  a real coverage gap in either one can be silently masked.
+- **Clock skew.** Gap analysis operates entirely on recorded timestamps
+  and does not estimate or correct for clock offsets between sources.
+  Skew between an absent and a corroborating source can affect both
+  cross-source corroboration and the attribution of a finding to a
+  specific interval.
+
+A finding is a structural statement about the absence of *recorded*
+evidence relative to another source, never a claim about what did or
+did not physically occur — findings must not be interpreted as proof
+that an event did or did not happen.
