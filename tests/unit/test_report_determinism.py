@@ -18,6 +18,7 @@ from witnessgraph.core.evidence import EvidenceItem
 from witnessgraph.core.hypothesis import EvidenceRef, Hypothesis
 from witnessgraph.core.provenance import compute_manifest
 from witnessgraph.core.time_model import TimeAssertion, TimePrecision
+from witnessgraph.core.tracked_finding import FindingStatus, TrackedGapFinding
 from witnessgraph.report.render import render_report, render_report_bytes
 
 NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
@@ -35,6 +36,7 @@ class _FakeStore:
     entities: dict[str, Entity] = field(default_factory=dict)
     time_assertions: dict[str, TimeAssertion] = field(default_factory=dict)
     hypotheses: dict[str, Hypothesis] = field(default_factory=dict)
+    tracked_findings: dict[str, TrackedGapFinding] = field(default_factory=dict)
 
     def put_evidence(self, item: EvidenceItem) -> None:
         self.evidence[item.id] = item
@@ -77,6 +79,37 @@ class _FakeStore:
 
     def list_hypotheses(self) -> list[Hypothesis]:
         return list(self.hypotheses.values())
+
+    def create_tracked_finding(self, finding: TrackedGapFinding) -> TrackedGapFinding:
+        existing = self.tracked_findings.get(finding.id)
+        if existing is not None:
+            return existing
+        self.tracked_findings[finding.id] = finding
+        return finding
+
+    def annotate_tracked_finding(
+        self,
+        id: str,
+        *,
+        status: FindingStatus,
+        annotated_by: str,
+        annotated_at: datetime,
+        note: str | None,
+    ) -> TrackedGapFinding:
+        existing = self.tracked_findings.get(id)
+        if existing is None:
+            raise ValueError(f"no tracked finding {id!r} to annotate")
+        updated = existing.with_annotation(
+            status=status, annotated_by=annotated_by, annotated_at=annotated_at, note=note
+        )
+        self.tracked_findings[id] = updated
+        return updated
+
+    def get_tracked_finding(self, id: str) -> TrackedGapFinding | None:
+        return self.tracked_findings.get(id)
+
+    def list_tracked_findings(self) -> list[TrackedGapFinding]:
+        return list(self.tracked_findings.values())
 
     def close(self) -> None:
         pass

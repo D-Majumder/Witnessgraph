@@ -15,8 +15,10 @@ from witnessgraph.core.events import NormalizedEvent
 from witnessgraph.core.evidence import validate_source_id
 from witnessgraph.core.hypothesis import EvidenceRef, Hypothesis, HypothesisStatus
 from witnessgraph.core.time_model import TimeAssertion
+from witnessgraph.core.tracked_finding import FindingStatus, TrackedGapFinding
 from witnessgraph.correlate.contradictions import detect_time_contradictions
 from witnessgraph.correlate.gaps import DEFAULT_MIN_CORROBORATING_EVENTS, find_gaps
+from witnessgraph.correlate.tracking import is_still_reproduced, track_findings
 from witnessgraph.ingest.base import SourceDescriptor
 from witnessgraph.ingest.pipeline import ingest_source
 from witnessgraph.ingest.registry import get_adapter, list_adapters
@@ -31,8 +33,13 @@ app = typer.Typer(
 )
 entities_app = typer.Typer(help="Inspect and create entities in a case.", no_args_is_help=True)
 hypothesis_app = typer.Typer(help="Manage hypotheses in a case.", no_args_is_help=True)
+findings_app = typer.Typer(
+    help="Inspect and annotate persisted, tracked gap-analysis findings (v0.7).",
+    no_args_is_help=True,
+)
 app.add_typer(entities_app, name="entities")
 app.add_typer(hypothesis_app, name="hypothesis")
+app.add_typer(findings_app, name="findings")
 
 
 def _resolve_evidence_ref(case: Case, ref_id: str) -> EvidenceRef:
@@ -447,6 +454,20 @@ def gaps(
             "Omitting this reproduces v0.5 behavior exactly."
         ),
     ),
+    track: bool = typer.Option(
+        False,
+        "--track",
+        help=(
+            "Optional (v0.7): after reporting, persist each finding found "
+            "above as a tracked finding (see `witnessgraph findings`). "
+            "Mechanical discovery only -- no analyst identity is accepted "
+            "or required here; a freshly tracked finding starts unannotated "
+            "(status 'open'). A finding already tracked from a prior run is "
+            "left completely unchanged, including any existing annotation. "
+            "Omitting this flag reproduces pre-v0.7 behavior exactly: "
+            "nothing is persisted."
+        ),
+    ),
 ) -> None:
     """Report deterministic cross-source evidence coverage gaps.
 
@@ -465,13 +486,15 @@ def gaps(
             param_hint="--min-corroborating-events",
         )
     case = Case.open(case_dir)
+    # The full, read-only analysis always completes before any persistence
+    # is attempted -- see track_findings's docstring and the design's
+    # transaction-boundary requirement.
     result = find_gaps(
         case.store,
         min_gap_seconds=min_gap_seconds,
         min_corroborating_events=min_corroborating_events,
         refine_source_by_attribute=refine_source_by_attribute,
     )
-    case.close()
     if result.refine_source_by_attribute is not None:
         typer.echo(
             f"source identity refined by attribute `{result.refine_source_by_attribute}` "
@@ -507,6 +530,140 @@ def gaps(
             "different coarse sources)"
         )
     typer.echo(excluded_summary)
+
+    if track:
+        # Persistence only, after the complete read-only analysis above --
+        # one transaction covers every new row this invocation creates.
+        with case.transaction():
+            outcomes = track_findings(
+                case.store,
+                result,
+                min_gap_seconds=min_gap_seconds,
+                min_corroborating_events=min_corroborating_events,
+            )
+        new_count = sum(1 for o in outcomes if o.newly_created)
+        already_tracked = len(outcomes) - new_count
+        typer.echo(f"tracked: {new_count} new finding(s), {already_tracked} already tracked")
+    case.close()
+
+
+def _format_tracked_finding_summary(finding: TrackedGapFinding, still_reproduced: bool) -> str:
+    absent_label = _format_resolved_source_plain(
+        finding.absent_source, finding.absent_source_refinement
+    )
+    present_label = _format_resolved_source_plain(
+        finding.present_source, finding.present_source_refinement
+    )
+    reviewed_by = (
+        f"{finding.status.value} by `{finding.annotated_by}` at "
+        f"{finding.annotated_at.isoformat() if finding.annotated_at else ''}"
+        if finding.annotated_by is not None
+        else "not yet reviewed"
+    )
+    reproduced_label = "yes" if still_reproduced else "no"
+    return (
+        f"{finding.id}  `{absent_label}` absent / `{present_label}` present  "
+        f"[{finding.interval_start.isoformat()}, {finding.interval_end.isoformat()})  "
+        f"status={finding.status.value} ({reviewed_by})  "
+        f"still reproduced by current evidence: {reproduced_label}"
+    )
+
+
+@findings_app.command("list")
+def findings_list(case_dir: Path = typer.Argument(..., help="Case directory to inspect.")) -> None:
+    """List every tracked (persisted) gap-analysis finding.
+
+    ``status`` reflects an analyst's review process only -- ``reviewed``
+    never means the underlying finding has been validated, and no status
+    here is ever a claim that an absent event should have existed. The
+    "still reproduced" indicator is computed live against current
+    evidence, using each finding's own originally recorded analysis
+    parameters, and is never itself persisted.
+    """
+    case = Case.open(case_dir)
+    tracked = case.store.list_tracked_findings()
+    if not tracked:
+        typer.echo("no tracked findings")
+        case.close()
+        return
+    for finding in tracked:
+        still_reproduced = is_still_reproduced(case.store, finding)
+        typer.echo(_format_tracked_finding_summary(finding, still_reproduced))
+    case.close()
+
+
+@findings_app.command("show")
+def findings_show(
+    case_dir: Path = typer.Argument(..., help="Case directory to inspect."),
+    finding_id: str = typer.Argument(..., help="Tracked finding id, from `findings list`."),
+) -> None:
+    """Show the full detail of one tracked finding, including its live
+    "still reproduced" state (see `findings list`'s help for what that
+    means and does not mean)."""
+    case = Case.open(case_dir)
+    finding = case.store.get_tracked_finding(finding_id)
+    if finding is None:
+        case.close()
+        typer.echo(f"no such tracked finding: {finding_id}", err=True)
+        raise typer.Exit(1)
+    still_reproduced = is_still_reproduced(case.store, finding)
+    case.close()
+    typer.echo(finding.model_dump_json(indent=2))
+    typer.echo(f"still reproduced by current evidence: {'yes' if still_reproduced else 'no'}")
+
+
+@findings_app.command("ack")
+def findings_ack(
+    case_dir: Path = typer.Argument(..., help="Case directory to modify."),
+    finding_id: str = typer.Argument(..., help="Tracked finding id, from `findings list`."),
+    status: FindingStatus = typer.Option(
+        ..., "--status", help="New review status: open, reviewed, or dismissed."
+    ),
+    by: str = typer.Option(
+        ...,
+        "--by",
+        help=(
+            "Required: the analyst identity performing this review. There "
+            "is no default -- an analyst identity is never invented or "
+            "inferred by this tool. Must not be blank or whitespace-only."
+        ),
+    ),
+    note: str | None = typer.Option(
+        None, "--note", help="Optional free-text note explaining this review decision."
+    ),
+) -> None:
+    """Replace a tracked finding's current review annotation.
+
+    This REPLACES the existing status/attribution/note; it does not
+    create a history record. There is no history table anywhere in this
+    feature -- the previous status, attribution, and note are permanently
+    discarded, not archived, once this command runs. A ``reviewed``
+    status never means the underlying finding has been validated, and no
+    status is ever a claim that an absent event should have existed.
+    """
+    if not by.strip():
+        raise typer.BadParameter(
+            "must not be blank or whitespace-only -- an analyst identity is "
+            "never invented or inferred by this tool",
+            param_hint="--by",
+        )
+    case = Case.open(case_dir)
+    try:
+        updated = case.store.annotate_tracked_finding(
+            finding_id,
+            status=status,
+            annotated_by=by,
+            annotated_at=datetime.now(UTC),
+            note=note,
+        )
+    except ValueError:
+        case.close()
+        typer.echo(f"no such tracked finding: {finding_id}", err=True)
+        raise typer.Exit(1) from None
+    case.close()
+    typer.echo(
+        f"tracked finding {updated.id} -> {updated.status.value} (by {updated.annotated_by})"
+    )
 
 
 @app.command()

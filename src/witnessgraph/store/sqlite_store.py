@@ -19,6 +19,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 from witnessgraph.core.entities import Entity
@@ -27,6 +28,7 @@ from witnessgraph.core.evidence import EvidenceItem
 from witnessgraph.core.hypothesis import Hypothesis
 from witnessgraph.core.ids import sha256_hex
 from witnessgraph.core.time_model import TimeAssertion
+from witnessgraph.core.tracked_finding import FindingStatus, TrackedGapFinding
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS evidence_items (id TEXT PRIMARY KEY, data TEXT NOT NULL);
@@ -34,6 +36,7 @@ CREATE TABLE IF NOT EXISTS normalized_events (id TEXT PRIMARY KEY, data TEXT NOT
 CREATE TABLE IF NOT EXISTS entities (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS time_assertions (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS hypotheses (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS tracked_gap_findings (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 """
 
 
@@ -259,6 +262,75 @@ class SqliteStore:
     def list_hypotheses(self) -> list[Hypothesis]:
         rows = self._conn.execute("SELECT data FROM hypotheses ORDER BY id").fetchall()
         return [Hypothesis.model_validate_json(r[0]) for r in rows]
+
+    # -- tracked gap findings (v0.7) --------------------------------------
+    def create_tracked_finding(self, finding: TrackedGapFinding) -> TrackedGapFinding:
+        """Insert-if-absent by ``finding.id`` (content-derived).
+
+        If a row with this id already exists, it is returned UNCHANGED --
+        re-discovery of an already-tracked finding never resets or
+        overwrites its status/annotated_by/annotated_at/note, even if the
+        incoming ``finding`` object (e.g. freshly built by the caller
+        with status=OPEN) differs in those fields. Callers
+        (``gaps --track``) are expected to always pass a freshly
+        constructed, never-annotated finding here; this method's own
+        insert-if-absent behavior is what makes that safe regardless.
+        """
+        existing = self.get_tracked_finding(finding.id)
+        if existing is not None:
+            return existing
+        self._conn.execute(
+            "INSERT INTO tracked_gap_findings (id, data) VALUES (?, ?)",
+            (finding.id, finding.model_dump_json()),
+        )
+        self._maybe_commit()
+        return finding
+
+    def annotate_tracked_finding(
+        self,
+        id: str,
+        *,
+        status: FindingStatus,
+        annotated_by: str,
+        annotated_at: datetime,
+        note: str | None,
+    ) -> TrackedGapFinding:
+        """Update ONLY the annotation of an existing tracked finding.
+
+        Anchor fields are never parameters to this method and are always
+        copied byte-for-byte from the stored row via
+        ``TrackedGapFinding.with_annotation()`` -- there is no parameter
+        through which a caller could supply a different anchor value.
+        Raises ``ValueError`` if no row with this id exists (annotating
+        requires the finding to have been tracked first; this never
+        silently creates one). There is no history: the previous
+        annotation is permanently discarded, not archived.
+        """
+        existing = self.get_tracked_finding(id)
+        if existing is None:
+            raise ValueError(f"no tracked finding {id!r} to annotate")
+        updated = existing.with_annotation(
+            status=status, annotated_by=annotated_by, annotated_at=annotated_at, note=note
+        )
+        assert updated.id == existing.id  # defense-in-depth: anchor cannot have moved
+        self._conn.execute(
+            "UPDATE tracked_gap_findings SET data = ? WHERE id = ?",
+            (updated.model_dump_json(), id),
+        )
+        self._maybe_commit()
+        return updated
+
+    def get_tracked_finding(self, id: str) -> TrackedGapFinding | None:
+        row = self._conn.execute(
+            "SELECT data FROM tracked_gap_findings WHERE id = ?", (id,)
+        ).fetchone()
+        return TrackedGapFinding.model_validate_json(row[0]) if row else None
+
+    def list_tracked_findings(self) -> list[TrackedGapFinding]:
+        rows = self._conn.execute(
+            "SELECT data FROM tracked_gap_findings ORDER BY id"
+        ).fetchall()
+        return [TrackedGapFinding.model_validate_json(r[0]) for r in rows]
 
 
 class FileBlobStore:

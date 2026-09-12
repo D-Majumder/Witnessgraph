@@ -32,8 +32,10 @@ from typing import TYPE_CHECKING
 
 from witnessgraph.core.events import NormalizedEvent
 from witnessgraph.core.time_model import TimeAssertion
+from witnessgraph.core.tracked_finding import TrackedGapFinding
 from witnessgraph.correlate.contradictions import TimeContradiction, detect_time_contradictions
 from witnessgraph.correlate.gaps import GapAnalysisResult
+from witnessgraph.correlate.tracking import is_still_reproduced
 
 if TYPE_CHECKING:
     from witnessgraph.core.provenance import ProvenanceManifest
@@ -353,6 +355,76 @@ def _render_coverage_gaps(result: GapAnalysisResult) -> str:
     return "\n".join(lines)
 
 
+_TRACKED_FINDING_DISCLOSURE = (
+    "A tracked finding's status reflects an analyst's review process only. "
+    "`reviewed` does not mean the underlying finding has been validated, "
+    "and no status here is ever a claim that an absent event should have "
+    "existed. Annotation history is not retained -- the current "
+    "status/attribution/note is the only state stored; a prior value is "
+    "permanently discarded once replaced. A finding whose corroborating "
+    "evidence changes receives a new tracked identity even if its sources "
+    "and interval are unchanged -- this is intentional and can require "
+    "re-review of what looks like \"the same\" gap."
+)
+
+
+def _format_tracked_finding_annotation(finding: TrackedGapFinding) -> str:
+    if finding.annotated_by is None:
+        return "(not yet reviewed)"
+    assert finding.annotated_at is not None  # paired by TrackedGapFinding's own invariant
+    note = _untrusted(finding.note) if finding.note is not None else "(none)"
+    return (
+        f"by {_untrusted(finding.annotated_by)} at "
+        f"{_format_datetime(finding.annotated_at)}, note: {note}"
+    )
+
+
+def _render_tracked_findings(store: Store) -> str | None:
+    """``## Tracked Findings`` (v0.7). Returns ``None`` (omit the section
+    entirely, not rendered as empty) when no findings have been tracked --
+    "not tracked" and "tracked, currently empty" are not the same state
+    the Coverage Gaps section keeps distinct, but there is no case here
+    where an empty, rendered section would be meaningful: unlike gap
+    analysis (which needs a caller-chosen threshold to even run), tracked
+    findings are either present in the store or they are not.
+
+    Pure function of ``store`` alone -- like ``_render_contradictions``,
+    not like ``_render_coverage_gaps`` (which requires an externally
+    computed, threshold-dependent result): a tracked finding's own
+    recorded analysis parameters are enough to recompute its live
+    "still reproduced" state with no external parameter needed.
+    """
+    findings = sorted(store.list_tracked_findings(), key=lambda t: t.id)
+    if not findings:
+        return None
+    lines = ["## Tracked Findings", ""]
+    for finding in findings:
+        absent_label = _format_resolved_source(
+            finding.absent_source, finding.absent_source_refinement
+        )
+        present_label = _format_resolved_source(
+            finding.present_source, finding.present_source_refinement
+        )
+        still_reproduced = is_still_reproduced(store, finding)
+        lines.append(f"- Tracked finding `{finding.id}`")
+        lines.append(
+            f"  - Source {absent_label} has no observed evidence in "
+            f"[{_format_datetime(finding.interval_start)}, "
+            f"{_format_datetime(finding.interval_end)}) while source "
+            f"{present_label} has corroborating activity"
+        )
+        lines.append(
+            f"  - status: {finding.status.value} "
+            f"({_format_tracked_finding_annotation(finding)})"
+        )
+        lines.append(
+            f"  - still reproduced by current evidence: {'yes' if still_reproduced else 'no'}"
+        )
+    lines.append("")
+    lines.append(_TRACKED_FINDING_DISCLOSURE)
+    return "\n".join(lines)
+
+
 def _render_integrity_summary(
     recomputed_manifest: ProvenanceManifest,
     recorded_manifest: ProvenanceManifest | None,
@@ -426,6 +498,9 @@ def render_report(
     ]
     if gap_analysis is not None:
         sections.append(_render_coverage_gaps(gap_analysis))
+    tracked_findings_section = _render_tracked_findings(store)
+    if tracked_findings_section is not None:
+        sections.append(tracked_findings_section)
     sections.append(_render_integrity_summary(recomputed_manifest, recorded_manifest))
     return "\n\n".join(sections) + "\n"
 

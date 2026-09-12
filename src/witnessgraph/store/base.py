@@ -7,6 +7,7 @@ network call.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol
 
 from witnessgraph.core.entities import Entity
@@ -14,6 +15,7 @@ from witnessgraph.core.events import NormalizedEvent
 from witnessgraph.core.evidence import EvidenceItem
 from witnessgraph.core.hypothesis import Hypothesis
 from witnessgraph.core.time_model import TimeAssertion
+from witnessgraph.core.tracked_finding import FindingStatus, TrackedGapFinding
 
 
 class Store(Protocol):
@@ -37,6 +39,19 @@ class Store(Protocol):
     def put_hypothesis(self, hypothesis: Hypothesis) -> None: ...
     def get_hypothesis(self, id: str) -> Hypothesis | None: ...
     def list_hypotheses(self) -> list[Hypothesis]: ...
+
+    def create_tracked_finding(self, finding: TrackedGapFinding) -> TrackedGapFinding: ...
+    def annotate_tracked_finding(
+        self,
+        id: str,
+        *,
+        status: FindingStatus,
+        annotated_by: str,
+        annotated_at: datetime,
+        note: str | None,
+    ) -> TrackedGapFinding: ...
+    def get_tracked_finding(self, id: str) -> TrackedGapFinding | None: ...
+    def list_tracked_findings(self) -> list[TrackedGapFinding]: ...
 
     def close(self) -> None: ...
 
