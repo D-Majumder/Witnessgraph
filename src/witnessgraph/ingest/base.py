@@ -20,10 +20,19 @@ from witnessgraph.core.evidence import EvidenceItem
 
 @dataclass(frozen=True)
 class SourceDescriptor:
-    """Describes one already-existing evidence source to be ingested."""
+    """Describes one already-existing evidence source to be ingested.
+
+    ``source_id``, if given, is an explicit, analyst-declared source
+    identity (docs/phase4-v0.4-source-identity-design.md) applied to
+    every record this one ingestion produces. It is supplied once per
+    ingest invocation -- never inferred from ``path``, ``kind_hint``, or
+    anything else -- and is validated (see
+    ``core.evidence.validate_source_id``) before an adapter ever sees it.
+    """
 
     path: Path
     kind_hint: str | None = None
+    source_id: str | None = None
 
 
 class EvidenceAdapter(Protocol):

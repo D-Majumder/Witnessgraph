@@ -16,7 +16,7 @@ This report's own content is not covered by the manifest hash above -- see the I
   - collected_at: 2026-01-01T00:00:00Z
   - observed_at: (not set)
   - chain_of_custody:
-    - actor: `adapter:jsonl@0.1.0`, action: `ingested`, timestamp: 2026-01-01T00:00:00Z, source_locator: `examples/sample-case/data/events.jsonl`
+    - actor: `adapter:jsonl@0.1.0`, action: `ingested`, timestamp: 2026-01-01T00:00:00Z, source_locator: `examples/sample-case/data/events.jsonl`, source_id: (no declared source)
 - Evidence `704c1143475a2165aac8af1d0a7330e79e0d0ca99fb4fef3cbb2db47e0fa37e2`
   - source_adapter: `syslog`
   - adapter_version: `0.1.0`
@@ -25,7 +25,7 @@ This report's own content is not covered by the manifest hash above -- see the I
   - collected_at: 2026-01-01T00:00:00Z
   - observed_at: (not set)
   - chain_of_custody:
-    - actor: `adapter:syslog@0.1.0`, action: `ingested`, timestamp: 2026-01-01T00:00:00Z, source_locator: `examples/sample-case/data/auth.syslog`
+    - actor: `adapter:syslog@0.1.0`, action: `ingested`, timestamp: 2026-01-01T00:00:00Z, source_locator: `examples/sample-case/data/auth.syslog`, source_id: (no declared source)
 - Evidence `b2651b60d40d64679b4ee7506795fbc6f7baf76aa1882a63bbbf43d281623ead`
   - source_adapter: `csv_timeline`
   - adapter_version: `0.1.0`
@@ -34,7 +34,7 @@ This report's own content is not covered by the manifest hash above -- see the I
   - collected_at: 2026-01-01T00:00:00Z
   - observed_at: (not set)
   - chain_of_custody:
-    - actor: `adapter:csv_timeline@0.1.0`, action: `ingested`, timestamp: 2026-01-01T00:00:00Z, source_locator: `examples/sample-case/data/timeline.csv`
+    - actor: `adapter:csv_timeline@0.1.0`, action: `ingested`, timestamp: 2026-01-01T00:00:00Z, source_locator: `examples/sample-case/data/timeline.csv`, source_id: (no declared source)
 
 ## Timeline
 

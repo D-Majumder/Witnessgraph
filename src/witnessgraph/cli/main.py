@@ -12,6 +12,7 @@ import typer
 
 from witnessgraph.core.entities import Entity
 from witnessgraph.core.events import NormalizedEvent
+from witnessgraph.core.evidence import validate_source_id
 from witnessgraph.core.hypothesis import EvidenceRef, Hypothesis, HypothesisStatus
 from witnessgraph.core.time_model import TimeAssertion
 from witnessgraph.correlate.contradictions import detect_time_contradictions
@@ -78,13 +79,27 @@ def ingest(
     case_dir: Path = typer.Argument(..., help="Case directory to ingest into."),
     adapter_id: str = typer.Argument(..., help="Adapter id, e.g. jsonl, csv_timeline, syslog."),
     source: Path = typer.Argument(..., help="Path to the evidence source file."),
+    source_id: str | None = typer.Option(
+        None,
+        "--source-id",
+        help=(
+            "Explicit, analyst-declared source identity applied to every record "
+            "from this ingestion (e.g. a host name). Never inferred -- omit to "
+            "declare no source. See docs/phase4-v0.4-source-identity-design.md."
+        ),
+    ),
 ) -> None:
     """Ingest one evidence source file into a case using the named adapter."""
     if adapter_id not in list_adapters():
         raise typer.BadParameter(f"unknown adapter {adapter_id!r}; known: {list_adapters()}")
+    if source_id is not None:
+        try:
+            validate_source_id(source_id)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--source-id") from exc
     case = Case.open(case_dir)
     adapter = get_adapter(adapter_id)
-    descriptor = SourceDescriptor(path=source)
+    descriptor = SourceDescriptor(path=source, source_id=source_id)
     result = ingest_source(case, adapter, descriptor, collected_at=datetime.now(UTC))
     case.record_manifest()
     case.close()

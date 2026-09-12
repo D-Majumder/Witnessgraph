@@ -68,6 +68,7 @@ class CsvTimelineAdapter:
                 adapter_version=self.adapter_version,
                 source_locator=f"{source.path}:{row_no}",
                 collected_at=collected_at,
+                source_id=source.source_id,
             )
 
             normalized: NormalizedEvent | None = None

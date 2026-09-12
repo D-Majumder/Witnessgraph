@@ -174,11 +174,17 @@ def _render_evidence_inventory(store: Store) -> str:
                     if record.source_locator is not None
                     else "(not set)"
                 )
+                source_id_text = (
+                    _untrusted(record.source_id)
+                    if record.source_id is not None
+                    else "(no declared source)"
+                )
                 lines.append(
                     f"    - actor: {_untrusted(record.actor)}, "
                     f"action: {_untrusted(record.action)}, "
                     f"timestamp: {_format_datetime(record.timestamp)}, "
-                    f"source_locator: {locator}"
+                    f"source_locator: {locator}, "
+                    f"source_id: {source_id_text}"
                 )
     return "\n".join(lines)
 

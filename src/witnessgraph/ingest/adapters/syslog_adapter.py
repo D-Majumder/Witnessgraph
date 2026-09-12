@@ -45,6 +45,7 @@ class SyslogAdapter:
                 adapter_version=self.adapter_version,
                 source_locator=f"{source.path}:{line_no}",
                 collected_at=collected_at,
+                source_id=source.source_id,
             )
 
             match = _SYSLOG_LINE_RE.match(line) if line is not None else None
