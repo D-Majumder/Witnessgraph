@@ -27,4 +27,12 @@ jobs:
         run: mypy src
 
       - name: Test (pytest)
+        # GitHub Actions sets GITHUB_ACTIONS=true, which Typer's rich_utils
+        # detects to force styled/colored CLI error output. Several CLI
+        # tests assert on literal option-name substrings in stderr (e.g.
+        # `assert b"--value" in result.stderr_bytes`), which the styling
+        # splits across ANSI escape codes. `_TYPER_FORCE_DISABLE_TERMINAL`
+        # is Typer's documented escape hatch for exactly this.
         run: pytest -q
+        env:
+          _TYPER_FORCE_DISABLE_TERMINAL: "1"
