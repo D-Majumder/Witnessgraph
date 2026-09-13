@@ -97,6 +97,16 @@ src/witnessgraph/
 
 ## Known limitations
 
+### Scripting against the CLI in your own CI/automation
+
+Typer (via its bundled `rich` integration) renders styled, boxed error
+output whenever the `GITHUB_ACTIONS`, `FORCE_COLOR`, or `PY_COLORS`
+environment variable is set, regardless of whether stderr is an actual
+terminal. If you invoke `witnessgraph` from your own CI pipeline and
+parse its stderr (e.g. grepping for an option name in a usage error),
+set `_TYPER_FORCE_DISABLE_TERMINAL=1` in that environment first to get
+the same plain-text output `witnessgraph` produces interactively.
+
 ### Coverage gap analysis
 
 `witnessgraph gaps <case> --min-gap-seconds <N>` reports intervals where
