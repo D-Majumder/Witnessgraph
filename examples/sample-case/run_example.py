@@ -112,6 +112,11 @@ def main() -> None:
     run_cli("graph", "path", str(case_dir), user_entity_id, ip_entity_id)
     run_cli("graph", "components", str(case_dir))
 
+    # --explain: why does that path exist? Resolve every relationship's
+    # derived_from evidence and every participating entity to their
+    # stored records, so the answer needs no second, manual lookup.
+    run_cli("graph", "path", str(case_dir), user_entity_id, ip_entity_id, "--explain")
+
     run_cli("timeline", str(case_dir))
     run_cli("contradictions", str(case_dir))
 

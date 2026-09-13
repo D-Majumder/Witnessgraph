@@ -62,7 +62,7 @@ any command (or command group) below for the exact options.
 The core object model (evidence, provenance, hypotheses) is stable at
 v0.1 (`DESIGN.md`'s seven locked principles). Everything else below was
 added afterward, in the same evidence-first style, and is exercised by
-610 tests. There is no AI integration, no graph database, and no web
+635 tests. There is no AI integration, no graph database, and no web
 UI — this is deliberately a local CLI over a SQLite + content-addressed
 store; see `DESIGN.md` for what stays out of scope by design.
 
@@ -75,9 +75,9 @@ store; see `DESIGN.md` for what stays out of scope by design.
 | `timeline` | Print all normalized events, ordered by earliest known time. |
 | `entities create / list / show` | Create and inspect entities explicitly linked to the evidence that established them. |
 | `relationships create / list / show [--entity]` | Create and inspect directed, evidence-backed relationships (graph edges) between two entities. |
-| `graph neighbors <entity> [--max-depth] [--direction]` | List every entity reachable from one entity within a bounded number of hops. |
-| `graph path <source> <target> [--max-depth] [--direction]` | Find one deterministic, shortest relationship chain between two entities, with full provenance. |
-| `graph components [--min-size]` | Partition every related entity into weakly-connected clusters, direction-independent. |
+| `graph neighbors <entity> [--max-depth] [--direction] [--explain]` | List every entity reachable from one entity within a bounded number of hops. |
+| `graph path <source> <target> [--max-depth] [--direction] [--explain]` | Find one deterministic, shortest relationship chain between two entities, with full provenance. |
+| `graph components [--min-size] [--explain]` | Partition every related entity into weakly-connected clusters, direction-independent. |
 | `time-assertions create` | Record one analyst's explicit, cited claim about when an event occurred. |
 | `hypothesis propose / support / contradict / list` | Manage evidence-backed hypotheses — never bare, unsupported claims. |
 | `contradictions [--track]` | Report structural `TimeAssertion` contradictions, optionally persisting each as a tracked finding. |
@@ -287,6 +287,65 @@ actor, or a conclusion. Graph analysis is not integrated into `report` —
 it stays a dedicated CLI output so an ordinary report never pays for a
 traversal or partition it didn't ask for.
 
+### Explainability (`--explain`)
+
+Every `graph neighbors`/`graph path`/`graph components` result already
+names its relationships' ids, types, and `derived_from` evidence ids —
+but until now, turning one of those ids into something readable meant a
+manual, out-of-band lookup (there is still no standalone `evidence show`
+command). `--explain`, accepted by all three commands, closes that gap:
+it resolves every relationship's `derived_from` ids and every
+participating entity id to their actual stored records, so a result
+answers *why* Witnessgraph produced it without a second lookup.
+
+```sh
+witnessgraph graph path ./my-case <source-entity-id> <target-entity-id> --explain
+witnessgraph graph path ./my-case <source-entity-id> <target-entity-id> --explain --format json
+```
+
+Example text output (`--explain`, abridged):
+
+```
+path found: 2 hop(s)
+step 1: <A> --[authenticated_as via `<rel-1>`, forward]--> <B> (derived_from: `<ev-1>`)
+   evidence:
+     - evidence_item `<ev-1>`: source_adapter=jsonl, source_locator=events.jsonl:1, collected_at=2026-01-01T09:00:00+00:00
+step 2: <B> --[connected_to via `<rel-2>`, forward]--> <C> (derived_from: `<ev-1>`)
+   evidence:
+     - evidence_item `<ev-1>`: source_adapter=jsonl, source_locator=events.jsonl:1, collected_at=2026-01-01T09:00:00+00:00
+entities:
+  - `<A>` (user): username=jsmith
+  - `<B>` (host): hostname=corp-ws-042
+  - `<C>` (ip): address=203.0.113.7
+```
+
+This is a pure lookup, never fabrication: resolving an id calls the same
+`Store.get_evidence`/`get_normalized_event`/`get_entity` every other
+referential-existence check in this codebase already uses. Nothing is
+summarized, guessed, or invented — a `derived_from` id naming neither an
+EvidenceItem nor a NormalizedEvent (`core/` does not enforce referential
+integrity at construction time) is reported as `"not_found"`, not
+dropped or raised as an error. `--explain` is strictly bounded by the
+result it explains: it resolves only ids already present in an
+already-bounded `neighbors`/`path` result or an already-whole-graph
+`components` result — no new traversal, no new depth parameter.
+
+`--explain` is additive and opt-in: omitting it reproduces byte-for-byte
+the same output as before this capability existed (both `text` and
+`json`); with it, JSON gains a `evidence_lineage` array on every
+relationship and a top-level `entities` map keyed by every entity id
+appearing in the result — structured data a future UI could render
+without parsing any human-readable string.
+
+**Limitations:** `--explain` reports a *structural fact* (this
+relationship exists) and a *provenance fact* (it is grounded in this
+evidence) — never a forensic conclusion. It never says who did
+something, why, or that two entities belong to the same incident merely
+because a path or component connects them. Resolved evidence metadata is
+exactly what `EvidenceItem`/`NormalizedEvent` already store (adapter,
+locator, timestamps, event type/attributes) — never raw evidence
+content, and never anything the database does not already contain.
+
 ## Known limitations
 
 ### Scripting against the CLI in your own CI/automation
@@ -354,7 +413,7 @@ ruff check .
 mypy src
 ```
 
-610 tests (unit + integration) exercise the full pipeline, including
+635 tests (unit + integration) exercise the full pipeline, including
 property-based tests (`hypothesis`) for serialization and provenance
 determinism. `ruff` and `mypy --strict` are both clean on `src/`.
 

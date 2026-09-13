@@ -36,7 +36,11 @@ the whole point (DESIGN.md principle 4).
    the host's direct neighbors, the deterministic two-hop chain from the
    user entity through the host to the ip (with full relationship/
    evidence provenance for each step), and confirmation that all three
-   entities fall into one connected cluster.
+   entities fall into one connected cluster. `graph path ... --explain`
+   then resolves that same chain's relationship evidence and entities to
+   their full stored records (source adapter/locator, entity type/
+   identifiers), so the chain is readable without a second, manual
+   lookup.
 6. `witnessgraph timeline` — events ordered by their earliest known time.
 7. `witnessgraph contradictions` — structural TimeAssertion conflict check.
 8. `witnessgraph hypothesis propose` / `support` — an evidence-backed claim.
