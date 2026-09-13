@@ -62,7 +62,6 @@ def ingest_source(
     source: SourceDescriptor,
     *,
     collected_at: datetime,
-    asserted_by: str = "analyst",
 ) -> IngestResult:
     """Run ``adapter`` over ``source``, storing everything it yields into ``case``.
 
