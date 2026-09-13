@@ -242,6 +242,21 @@ def _render_entities(store: Store) -> str:
     return "\n".join(lines)
 
 
+def _render_relationships(store: Store) -> str:
+    lines = ["## Relationships", ""]
+    relationships = sorted(store.list_relationships(), key=lambda r: r.id)
+    if not relationships:
+        lines.append("(none)")
+        return "\n".join(lines)
+    for rel in relationships:
+        lines.append(f"- Relationship `{rel.id}` ({_untrusted(rel.relationship_type)})")
+        lines.append(f"  - source_entity_id: `{rel.source_entity_id}`")
+        lines.append(f"  - target_entity_id: `{rel.target_entity_id}`")
+        lines.append(f"  - derived_from: {', '.join(f'`{did}`' for did in rel.derived_from)}")
+        lines.extend(_sorted_dict_lines("attributes", rel.attributes))
+    return "\n".join(lines)
+
+
 def _render_hypotheses(store: Store) -> str:
     lines = ["## Hypotheses", ""]
     hypotheses = sorted(store.list_hypotheses(), key=lambda h: h.id)
@@ -506,9 +521,10 @@ def _render_integrity_summary(
     lines.append(
         "This verdict covers only: EvidenceItem.raw_content_hash for every "
         "evidence item, and the full canonical content of every "
-        "NormalizedEvent, Entity, TimeAssertion, and Hypothesis. It does "
-        "NOT cover the following fields displayed elsewhere in this report, "
-        "which are excluded from the manifest hash by design: "
+        "NormalizedEvent, Entity, Relationship, TimeAssertion, and "
+        "Hypothesis. It does NOT cover the following fields displayed "
+        "elsewhere in this report, which are excluded from the manifest "
+        "hash by design: "
         "EvidenceItem.chain_of_custody, EvidenceItem.collected_at, "
         "EvidenceItem.source_locator, EvidenceItem.source_adapter, "
         "EvidenceItem.adapter_version, EvidenceItem.ingest_parameters, and "
@@ -546,6 +562,7 @@ def render_report(
         _render_evidence_inventory(store),
         _render_timeline(store),
         _render_entities(store),
+        _render_relationships(store),
         _render_hypotheses(store),
         _render_contradictions(store),
     ]

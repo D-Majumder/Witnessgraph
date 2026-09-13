@@ -74,7 +74,7 @@ def test_top_level_keys_are_exactly_the_specified_set(tmp_path: Path) -> None:
     doc = _render(case)
     assert set(doc.keys()) == {
         "schema_version", "case_name", "manifest", "evidence", "timeline",
-        "entities", "hypotheses", "contradictions", "coverage_gaps",
+        "entities", "relationships", "hypotheses", "contradictions", "coverage_gaps",
         "tracked_findings", "tracked_contradictions",
     }
     case.close()
@@ -770,8 +770,9 @@ def test_canonical_encoding_is_compact_sorted_keys_no_trailing_newline(tmp_path:
     assert ": " not in text and ", " not in text  # compact separators, no extra whitespace
     # Top-level keys byte-order is alphabetical (canonical_json_bytes sort_keys=True).
     top_level_order = ["case_name", "contradictions", "coverage_gaps", "entities",
-                        "evidence", "hypotheses", "manifest", "schema_version",
-                        "timeline", "tracked_contradictions", "tracked_findings"]
+                        "evidence", "hypotheses", "manifest", "relationships",
+                        "schema_version", "timeline", "tracked_contradictions",
+                        "tracked_findings"]
     positions = [text.index(f'"{k}"') for k in top_level_order]
     assert positions == sorted(positions)
     case.close()

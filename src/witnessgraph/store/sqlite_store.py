@@ -27,6 +27,7 @@ from witnessgraph.core.events import NormalizedEvent
 from witnessgraph.core.evidence import EvidenceItem
 from witnessgraph.core.hypothesis import Hypothesis
 from witnessgraph.core.ids import sha256_hex
+from witnessgraph.core.relationships import Relationship
 from witnessgraph.core.time_model import TimeAssertion
 from witnessgraph.core.tracked_finding import FindingStatus, TrackedGapFinding
 from witnessgraph.core.tracked_time_contradiction import TrackedTimeContradiction
@@ -35,6 +36,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS evidence_items (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS normalized_events (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS entities (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS relationships (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS time_assertions (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS hypotheses (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS tracked_gap_findings (id TEXT PRIMARY KEY, data TEXT NOT NULL);
@@ -72,9 +74,10 @@ class NormalizedEventConflictError(RuntimeError):
 class SqliteStore:
     """A Store implementation backed by a single local SQLite file.
 
-    Evidence/normalized-events/entities/time-assertions are effectively
-    append-only (their ids are either content hashes or freshly generated
-    UUIDs that are never expected to collide with different content).
+    Evidence/normalized-events/entities/relationships/time-assertions are
+    effectively append-only (their ids are either content hashes or
+    freshly generated UUIDs that are never expected to collide with
+    different content).
     Hypotheses are the one object type with a real lifecycle
     (proposed -> supported/contradicted/withdrawn) and are stored as an
     upsert-by-id, since a status change is a legitimate new state for
@@ -235,6 +238,30 @@ class SqliteStore:
     def list_entities(self) -> list[Entity]:
         rows = self._conn.execute("SELECT data FROM entities ORDER BY id").fetchall()
         return [Entity.model_validate_json(r[0]) for r in rows]
+
+    # -- relationships (v1.1) ---------------------------------------------
+    def put_relationship(self, relationship: Relationship) -> None:
+        """Store ``relationship``, as an insert-if-absent -- see ``put_time_assertion``.
+
+        ``Relationship.create()``-built ids are content-derived, so
+        re-running ``relationships create`` with identical arguments is a
+        safe, idempotent no-op rather than a duplicate edge.
+        """
+        self._conn.execute(
+            "INSERT OR IGNORE INTO relationships (id, data) VALUES (?, ?)",
+            (relationship.id, relationship.model_dump_json()),
+        )
+        self._maybe_commit()
+
+    def get_relationship(self, id: str) -> Relationship | None:
+        row = self._conn.execute(
+            "SELECT data FROM relationships WHERE id = ?", (id,)
+        ).fetchone()
+        return Relationship.model_validate_json(row[0]) if row else None
+
+    def list_relationships(self) -> list[Relationship]:
+        rows = self._conn.execute("SELECT data FROM relationships ORDER BY id").fetchall()
+        return [Relationship.model_validate_json(r[0]) for r in rows]
 
     # -- time assertions ---------------------------------------------
     def put_time_assertion(self, assertion: TimeAssertion) -> None:

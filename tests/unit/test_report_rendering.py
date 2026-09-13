@@ -27,7 +27,7 @@ def _evidence(content: bytes = b"hello world", locator: str = "src.log:1") -> Ev
     )
 
 
-def test_empty_case_renders_all_seven_sections_as_empty(tmp_path: Path) -> None:
+def test_empty_case_renders_all_sections_as_empty(tmp_path: Path) -> None:
     case = Case.create(tmp_path / "case")
     manifest = case.compute_manifest()
     report = render_report(
@@ -38,12 +38,14 @@ def test_empty_case_renders_all_seven_sections_as_empty(tmp_path: Path) -> None:
         "## Evidence Inventory",
         "## Timeline",
         "## Entities",
+        "## Relationships",
         "## Hypotheses",
         "## Contradictions",
         "## Integrity Summary",
     ):
         assert heading in report
-    assert report.count("(none)") == 5  # evidence, timeline, entities, hypotheses, contradictions
+    # evidence, timeline, entities, relationships, hypotheses, contradictions
+    assert report.count("(none)") == 6
     assert "Case: `my-case`" in report
     assert "(no recorded manifest)" in report
     case.close()

@@ -137,7 +137,7 @@ def test_legacy_case_replay_reports_not_comparable_not_a_false_mismatch(tmp_path
     assert result.version_comparable is False
     assert result.recorded_manifest is not None
     assert result.recorded_manifest.manifest_version == 1
-    assert result.recomputed_manifest.manifest_version == 2
+    assert result.recomputed_manifest.manifest_version == 3
     case.close()
 
 

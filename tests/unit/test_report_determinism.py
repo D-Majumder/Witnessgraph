@@ -17,6 +17,7 @@ from witnessgraph.core.events import NormalizedEvent
 from witnessgraph.core.evidence import EvidenceItem
 from witnessgraph.core.hypothesis import EvidenceRef, Hypothesis
 from witnessgraph.core.provenance import compute_manifest
+from witnessgraph.core.relationships import Relationship
 from witnessgraph.core.time_model import TimeAssertion, TimePrecision
 from witnessgraph.core.tracked_finding import FindingStatus, TrackedGapFinding
 from witnessgraph.core.tracked_time_contradiction import TrackedTimeContradiction
@@ -35,6 +36,7 @@ class _FakeStore:
     evidence: dict[str, EvidenceItem] = field(default_factory=dict)
     events: dict[str, NormalizedEvent] = field(default_factory=dict)
     entities: dict[str, Entity] = field(default_factory=dict)
+    relationships: dict[str, Relationship] = field(default_factory=dict)
     time_assertions: dict[str, TimeAssertion] = field(default_factory=dict)
     hypotheses: dict[str, Hypothesis] = field(default_factory=dict)
     tracked_findings: dict[str, TrackedGapFinding] = field(default_factory=dict)
@@ -66,6 +68,15 @@ class _FakeStore:
 
     def list_entities(self) -> list[Entity]:
         return list(self.entities.values())
+
+    def put_relationship(self, relationship: Relationship) -> None:
+        self.relationships[relationship.id] = relationship
+
+    def get_relationship(self, id: str) -> Relationship | None:
+        return self.relationships.get(id)
+
+    def list_relationships(self) -> list[Relationship]:
+        return list(self.relationships.values())
 
     def put_time_assertion(self, assertion: TimeAssertion) -> None:
         self.time_assertions[assertion.id] = assertion

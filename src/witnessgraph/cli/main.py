@@ -15,6 +15,7 @@ from witnessgraph.core.entities import Entity
 from witnessgraph.core.events import NormalizedEvent
 from witnessgraph.core.evidence import validate_source_id
 from witnessgraph.core.hypothesis import EvidenceRef, Hypothesis, HypothesisStatus
+from witnessgraph.core.relationships import Relationship
 from witnessgraph.core.time_model import TimeAssertion, TimePrecision
 from witnessgraph.core.tracked_finding import FindingStatus, TrackedGapFinding
 from witnessgraph.core.tracked_time_contradiction import TrackedTimeContradiction
@@ -36,6 +37,14 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 entities_app = typer.Typer(help="Inspect and create entities in a case.", no_args_is_help=True)
+relationships_app = typer.Typer(
+    help=(
+        "Create and inspect evidence-backed relationships between entities "
+        "(v1.1) -- the graph's edges. Directed: a relationship's source "
+        "and target entity are never inferred as also implying the reverse."
+    ),
+    no_args_is_help=True,
+)
 hypothesis_app = typer.Typer(help="Manage hypotheses in a case.", no_args_is_help=True)
 findings_app = typer.Typer(
     help="Inspect and annotate persisted, tracked gap-analysis findings (v0.7).",
@@ -61,6 +70,7 @@ time_assertions_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(entities_app, name="entities")
+app.add_typer(relationships_app, name="relationships")
 app.add_typer(hypothesis_app, name="hypothesis")
 app.add_typer(findings_app, name="findings")
 app.add_typer(contradiction_findings_app, name="contradiction-findings")
@@ -216,6 +226,118 @@ def entities_show(case_dir: Path, entity_id: str) -> None:
         typer.echo(f"no such entity: {entity_id}", err=True)
         raise typer.Exit(1)
     typer.echo(entity.model_dump_json(indent=2))
+
+
+@relationships_app.command("create")
+def relationships_create(
+    case_dir: Path = typer.Argument(..., help="Case directory to modify."),
+    relationship_type: str = typer.Argument(
+        ..., help="Free-form label for the relationship, e.g. 'connected_to'."
+    ),
+    source: str = typer.Option(..., "--source", help="Source entity id (edge start)."),
+    target: str = typer.Option(..., "--target", help="Target entity id (edge end)."),
+    derived_from: list[str] = typer.Option(
+        ...,
+        "--derived-from",
+        help="EvidenceItem or NormalizedEvent id this relationship is grounded in.",
+    ),
+    attribute: list[str] = typer.Option(
+        [], "--attribute", help="key=value attribute, e.g. --attribute protocol=tcp"
+    ),
+) -> None:
+    """Create a directed, evidence-backed relationship between two existing entities.
+
+    Witnessgraph never infers a relationship on its own -- this always
+    records an explicit analyst claim, grounded in cited evidence, that
+    ``source`` and ``target`` were observed to be connected. Re-running
+    this command with identical arguments is a safe, idempotent no-op:
+    like `time-assertions create`, a Relationship's id is content-derived,
+    so it converges rather than duplicates.
+    """
+    case = _open_case_or_fail(case_dir)
+    if case.store.get_entity(source) is None:
+        case.close()
+        raise typer.BadParameter(f"{source!r} is not a known Entity id", param_hint="--source")
+    if case.store.get_entity(target) is None:
+        case.close()
+        raise typer.BadParameter(f"{target!r} is not a known Entity id", param_hint="--target")
+    for ref_id in derived_from:
+        is_evidence = case.store.get_evidence(ref_id) is not None
+        is_event = case.store.get_normalized_event(ref_id) is not None
+        if not (is_evidence or is_event):
+            case.close()
+            raise typer.BadParameter(
+                f"{ref_id!r} is not a known EvidenceItem/NormalizedEvent id",
+                param_hint="--derived-from",
+            )
+    try:
+        attributes = dict(pair.split("=", 1) for pair in attribute)
+    except ValueError:
+        case.close()
+        raise typer.BadParameter(
+            "must be in key=value form", param_hint="--attribute"
+        ) from None
+    try:
+        relationship = Relationship.create(
+            relationship_type=relationship_type,
+            source_entity_id=source,
+            target_entity_id=target,
+            derived_from=tuple(derived_from),
+            created_at=datetime.now(UTC),
+            attributes=attributes,
+        )
+    except ValueError as exc:
+        case.close()
+        raise typer.BadParameter(str(exc)) from exc
+    already_existed = case.store.get_relationship(relationship.id) is not None
+    case.store.put_relationship(relationship)
+    case.record_manifest()
+    case.close()
+    if already_existed:
+        typer.echo(f"relationship {relationship.id} already exists -- unchanged")
+    else:
+        typer.echo(
+            f"created relationship {relationship.id}: "
+            f"{source} -[{relationship_type}]-> {target}"
+        )
+
+
+@relationships_app.command("list")
+def relationships_list(
+    case_dir: Path = typer.Argument(..., help="Case directory to inspect."),
+    entity: str | None = typer.Option(
+        None,
+        "--entity",
+        help="Only show relationships where this entity id is the source or target.",
+    ),
+) -> None:
+    """List relationships in a case, optionally filtered to one entity."""
+    case = _open_case_or_fail(case_dir)
+    relationships = case.store.list_relationships()
+    case.close()
+    if entity is not None:
+        relationships = [
+            r for r in relationships if entity in (r.source_entity_id, r.target_entity_id)
+        ]
+    if not relationships:
+        typer.echo("no relationships")
+        return
+    for rel in relationships:
+        typer.echo(
+            f"{rel.id}  {rel.source_entity_id} -[{rel.relationship_type}]-> "
+            f"{rel.target_entity_id}"
+        )
+
+
+@relationships_app.command("show")
+def relationships_show(case_dir: Path, relationship_id: str) -> None:
+    case = _open_case_or_fail(case_dir)
+    relationship = case.store.get_relationship(relationship_id)
+    case.close()
+    if relationship is None:
+        typer.echo(f"no such relationship: {relationship_id}", err=True)
+        raise typer.Exit(1)
+    typer.echo(relationship.model_dump_json(indent=2))
 
 
 @time_assertions_app.command("create")

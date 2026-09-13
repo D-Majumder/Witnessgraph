@@ -13,7 +13,7 @@ contract, applied to a second, independent output format:
   iteration/Python-construction order).
 - No duplicate domain models: every function here reads existing public
   attributes of ``EvidenceItem``/``NormalizedEvent``/``Entity``/
-  ``Hypothesis``/``TimeAssertion``/``GapFinding``/``GapAnalysisResult``/
+  ``Relationship``/``Hypothesis``/``TimeAssertion``/``GapFinding``/``GapAnalysisResult``/
   ``TimeContradiction``/``TrackedGapFinding``/``TrackedTimeContradiction``
   directly and builds plain ``dict``/``list``/primitive trees -- this is
   a second *representation*, not a second model layer, exactly
@@ -173,6 +173,26 @@ def _build_entities(store: Store) -> list[dict[str, Any]]:
             "derived_from": list(entity.derived_from),
         }
         for entity in entities
+    ]
+
+
+def _build_relationships(store: Store) -> list[dict[str, Any]]:
+    # No `created_at` field -- mirrors NormalizedEvent/TimeAssertion's own
+    # JSON shape, both of which also omit it: like those two types,
+    # Relationship's id is content-derived and created_at is excluded from
+    # identity (ingest-time wall clock, not observational content), so it
+    # is treated as not part of the type's reportable shape here either.
+    relationships = sorted(store.list_relationships(), key=lambda r: r.id)
+    return [
+        {
+            "id": rel.id,
+            "relationship_type": rel.relationship_type,
+            "source_entity_id": rel.source_entity_id,
+            "target_entity_id": rel.target_entity_id,
+            "attributes": dict(rel.attributes),
+            "derived_from": list(rel.derived_from),
+        }
+        for rel in relationships
     ]
 
 
@@ -346,6 +366,7 @@ def build_report_json_tree(
         "evidence": _build_evidence(store),
         "timeline": _build_timeline(store),
         "entities": _build_entities(store),
+        "relationships": _build_relationships(store),
         "hypotheses": _build_hypotheses(store),
         "contradictions": _build_contradictions(store),
         "coverage_gaps": _build_coverage_gaps(gap_analysis) if gap_analysis is not None else None,

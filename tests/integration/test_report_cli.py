@@ -108,7 +108,7 @@ def test_verify_exits_nonzero_on_tampered_manifest(tmp_path: Path) -> None:
     # be a genuine hash MISMATCH rather than a version-mismatch "not
     # comparable" outcome -- see docs/phase3-v0.3-design.md §11.
     manifest_path.write_text(
-        '{"collection_hashes": {}, "manifest_hash": "deadbeef", "manifest_version": 2}'
+        '{"collection_hashes": {}, "manifest_hash": "deadbeef", "manifest_version": 3}'
     )
     result = runner.invoke(app, ["verify", str(case_dir)])
     assert result.exit_code != 0

@@ -1,10 +1,10 @@
 """Provenance manifest: a deterministic, cryptographically verifiable case summary.
 
 See DESIGN.md principle 5. The manifest hash changes if and only if the
-set of evidence, normalized events, entities, time assertions, or
-hypotheses in the case changes. It does not depend on insertion order,
-the machine it was computed on, or wall-clock time (aside from
-timestamps that are themselves part of the case's content).
+set of evidence, normalized events, entities, relationships, time
+assertions, or hypotheses in the case changes. It does not depend on
+insertion order, the machine it was computed on, or wall-clock time
+(aside from timestamps that are themselves part of the case's content).
 
 Note: EvidenceItem's contribution to the manifest is its
 ``raw_content_hash`` (== its id), not a hash of the full serialized
@@ -23,6 +23,22 @@ version 2) algorithm from one computed under the old (v0.1/v0.2, version
 1) algorithm, which hashed the full object including ``created_at`` for
 those two types -- the two are not comparable, and callers must check
 the version before comparing hashes (see ``witnessgraph.replay.replay``).
+
+v1.1 adds a sixth collection, ``relationships`` (``core.relationships.
+Relationship``, content-addressed exactly like ``NormalizedEvent``/
+``TimeAssertion`` -- contributes ``obj.id`` directly). This changes the
+manifest hash for every case, even one with zero relationships, since
+the set of collection names hashed together is itself part of the
+manifest -- so ``manifest_version`` bumps to 3, following the exact
+v0.1/v0.2 -> v0.3 precedent above. An old case's case.db lazily gains an
+empty ``relationships`` table on next open (``SqliteStore``'s
+``CREATE TABLE IF NOT EXISTS`` schema, run unconditionally on every
+open) -- no migration step is required, and every existing collection's
+recorded content and manifest.json are left completely untouched. Its
+recorded (v2) manifest simply reads as version-incomparable against a
+freshly recomputed (v3) one, exactly like a v0.1/v0.2 case does today;
+`witnessgraph verify`/`replay` already report that as NOT COMPARABLE,
+never a false MISMATCH.
 """
 
 from __future__ import annotations
@@ -39,7 +55,7 @@ if TYPE_CHECKING:
 #: The current manifest algorithm version. Bump this, and document the
 #: change in docs/, whenever a change to what/how collections are hashed
 #: would make an old manifest incomparable to a newly computed one.
-CURRENT_MANIFEST_VERSION = 2
+CURRENT_MANIFEST_VERSION = 3
 
 
 class ProvenanceManifest(BaseModel):
@@ -80,6 +96,7 @@ def compute_manifest(store: Store) -> ProvenanceManifest:
         "evidence_items": {e.id: e.raw_content_hash for e in store.list_evidence()},
         "normalized_events": {e.id: e.id for e in store.list_normalized_events()},
         "entities": {e.id: content_hash_of(e) for e in store.list_entities()},
+        "relationships": {r.id: r.id for r in store.list_relationships()},
         "time_assertions": {t.id: t.id for t in store.list_time_assertions()},
         "hypotheses": {h.id: content_hash_of(h) for h in store.list_hypotheses()},
     }
