@@ -15,6 +15,7 @@ from witnessgraph.core.entities import Entity
 from witnessgraph.core.events import NormalizedEvent
 from witnessgraph.core.evidence import validate_source_id
 from witnessgraph.core.hypothesis import EvidenceRef, Hypothesis, HypothesisStatus
+from witnessgraph.core.ids import canonical_json_bytes
 from witnessgraph.core.relationships import Relationship
 from witnessgraph.core.time_model import TimeAssertion, TimePrecision
 from witnessgraph.core.tracked_finding import FindingStatus, TrackedGapFinding
@@ -22,6 +23,17 @@ from witnessgraph.core.tracked_time_contradiction import TrackedTimeContradictio
 from witnessgraph.correlate.contradiction_tracking import track_contradictions
 from witnessgraph.correlate.contradictions import detect_time_contradictions
 from witnessgraph.correlate.gaps import DEFAULT_MIN_CORROBORATING_EVENTS, find_gaps
+from witnessgraph.correlate.graph import (
+    DEFAULT_NEIGHBORS_MAX_DEPTH,
+    DEFAULT_PATH_MAX_DEPTH,
+    MAX_ALLOWED_DEPTH,
+    GraphDirection,
+    TraversalStep,
+    find_neighbors,
+    find_path,
+    neighbors_result_to_json,
+    path_result_to_json,
+)
 from witnessgraph.correlate.tracking import is_still_reproduced, track_findings
 from witnessgraph.ingest.base import SourceDescriptor
 from witnessgraph.ingest.pipeline import ingest_source
@@ -42,6 +54,15 @@ relationships_app = typer.Typer(
         "Create and inspect evidence-backed relationships between entities "
         "(v1.1) -- the graph's edges. Directed: a relationship's source "
         "and target entity are never inferred as also implying the reverse."
+    ),
+    no_args_is_help=True,
+)
+graph_app = typer.Typer(
+    help=(
+        "Traverse the graph of Relationships between Entities (v1.1). "
+        "Structural analysis only -- a result describes what is connected "
+        "to what, and through which cited evidence, never a claim of "
+        "causation, responsibility, or truth."
     ),
     no_args_is_help=True,
 )
@@ -71,6 +92,7 @@ time_assertions_app = typer.Typer(
 )
 app.add_typer(entities_app, name="entities")
 app.add_typer(relationships_app, name="relationships")
+app.add_typer(graph_app, name="graph")
 app.add_typer(hypothesis_app, name="hypothesis")
 app.add_typer(findings_app, name="findings")
 app.add_typer(contradiction_findings_app, name="contradiction-findings")
@@ -869,6 +891,160 @@ def gaps(
         already_tracked = len(outcomes) - new_count
         typer.echo(f"tracked: {new_count} new finding(s), {already_tracked} already tracked")
     case.close()
+
+
+def _format_step_text(step: TraversalStep) -> str:
+    rel = step.relationship
+    derived = ", ".join(f"`{d}`" for d in rel.derived_from)
+    return (
+        f"{step.from_entity_id} --[{rel.relationship_type} via `{rel.id}`, "
+        f"{step.walked_direction}]--> {step.to_entity_id} (derived_from: {derived})"
+    )
+
+
+def _validate_graph_format(output_format: str) -> None:
+    if output_format not in ("text", "json"):
+        raise typer.BadParameter(
+            f"unsupported --format {output_format!r}; only 'text' or 'json' is supported"
+        )
+
+
+@graph_app.command("neighbors")
+def graph_neighbors(
+    case_dir: Path = typer.Argument(..., help="Case directory to inspect."),
+    entity_id: str = typer.Argument(..., help="Entity id to find neighbors of."),
+    max_depth: int = typer.Option(
+        DEFAULT_NEIGHBORS_MAX_DEPTH,
+        "--max-depth",
+        help=(
+            f"Maximum number of hops to traverse (1-{MAX_ALLOWED_DEPTH}). "
+            "1 (the default) means direct neighbors only."
+        ),
+    ),
+    direction: GraphDirection = typer.Option(
+        GraphDirection.OUT.value,
+        "--direction",
+        help=(
+            "Which edges to follow: 'out' (default -- only this entity's "
+            "own outgoing relationships), 'in' (only incoming), or 'both'. "
+            "Relationships are directed; 'out' never treats an incoming "
+            "edge as if it pointed the other way."
+        ),
+    ),
+    output_format: str = typer.Option(
+        "text", "--format", help="Output format: 'text' (default) or 'json'."
+    ),
+) -> None:
+    """List every entity reachable from ENTITY_ID within --max-depth hops.
+
+    A structural result only: an entity appearing here was found via a
+    chain of explicit, evidence-backed Relationships -- never a claim
+    that the entities are meaningfully associated beyond what those
+    relationships and their cited evidence actually establish.
+    """
+    _validate_graph_format(output_format)
+    if not (1 <= max_depth <= MAX_ALLOWED_DEPTH):
+        raise typer.BadParameter(
+            f"must be between 1 and {MAX_ALLOWED_DEPTH}", param_hint="--max-depth"
+        )
+    case = _open_case_or_fail(case_dir)
+    if case.store.get_entity(entity_id) is None:
+        case.close()
+        typer.echo(f"no such entity: {entity_id}", err=True)
+        raise typer.Exit(1)
+    result = find_neighbors(case.store, entity_id, max_depth=max_depth, direction=direction)
+    case.close()
+
+    if output_format == "json":
+        sys.stdout.buffer.write(canonical_json_bytes(neighbors_result_to_json(result)))
+        sys.stdout.buffer.flush()
+        return
+
+    if not result.reached:
+        typer.echo(
+            f"no entities reached from {entity_id} within {max_depth} hop(s) "
+            f"(direction={direction.value})"
+        )
+        return
+    typer.echo(
+        f"neighbors of {entity_id} (direction={direction.value}, max-depth={max_depth}): "
+        f"{len(result.reached)} entity(ies) reached"
+    )
+    for reached in result.reached:
+        typer.echo(f"- hop {reached.hop_count}: {_format_step_text(reached.via)}")
+
+
+@graph_app.command("path")
+def graph_path(
+    case_dir: Path = typer.Argument(..., help="Case directory to inspect."),
+    source_entity_id: str = typer.Argument(..., help="Entity id to search from."),
+    target_entity_id: str = typer.Argument(..., help="Entity id to search for."),
+    max_depth: int = typer.Option(
+        DEFAULT_PATH_MAX_DEPTH,
+        "--max-depth",
+        help=f"Maximum number of hops to search before giving up (1-{MAX_ALLOWED_DEPTH}).",
+    ),
+    direction: GraphDirection = typer.Option(
+        GraphDirection.OUT.value,
+        "--direction",
+        help=(
+            "Which edges to follow: 'out' (default -- only forward along "
+            "each relationship's own direction), 'in' (only backward), or "
+            "'both' (either way -- an explicit, undirected search)."
+        ),
+    ),
+    output_format: str = typer.Option(
+        "text", "--format", help="Output format: 'text' (default) or 'json'."
+    ),
+) -> None:
+    """Find one deterministic, shortest relationship chain from SOURCE_ENTITY_ID
+    to TARGET_ENTITY_ID, within --max-depth hops.
+
+    Reports a structural connection only, with full step-by-step
+    provenance (each step's relationship id, type, and cited evidence) --
+    never a claim of causation, responsibility, or truth. If more than
+    one shortest chain exists, the one reported is chosen by a fixed,
+    documented, deterministic rule (breadth-first search breaking ties by
+    relationship id -- see correlate.graph's module docstring), never by
+    incidental storage order. "No path found" within the searched depth
+    is a valid result, not an error.
+    """
+    _validate_graph_format(output_format)
+    if not (1 <= max_depth <= MAX_ALLOWED_DEPTH):
+        raise typer.BadParameter(
+            f"must be between 1 and {MAX_ALLOWED_DEPTH}", param_hint="--max-depth"
+        )
+    case = _open_case_or_fail(case_dir)
+    if case.store.get_entity(source_entity_id) is None:
+        case.close()
+        typer.echo(f"no such entity: {source_entity_id}", err=True)
+        raise typer.Exit(1)
+    if case.store.get_entity(target_entity_id) is None:
+        case.close()
+        typer.echo(f"no such entity: {target_entity_id}", err=True)
+        raise typer.Exit(1)
+    result = find_path(
+        case.store, source_entity_id, target_entity_id, max_depth=max_depth, direction=direction
+    )
+    case.close()
+
+    if output_format == "json":
+        sys.stdout.buffer.write(canonical_json_bytes(path_result_to_json(result)))
+        sys.stdout.buffer.flush()
+        return
+
+    if not result.found:
+        typer.echo(
+            f"no path found from {source_entity_id} to {target_entity_id} "
+            f"within {max_depth} hop(s) (direction={direction.value})"
+        )
+        return
+    if source_entity_id == target_entity_id:
+        typer.echo(f"{source_entity_id} is the search target itself: 0 hop(s)")
+        return
+    typer.echo(f"path found: {result.hop_count} hop(s)")
+    for i, step in enumerate(result.steps, start=1):
+        typer.echo(f"step {i}: {_format_step_text(step)}")
 
 
 def _format_tracked_finding_summary(finding: TrackedGapFinding, still_reproduced: bool) -> str:
