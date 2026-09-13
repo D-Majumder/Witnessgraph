@@ -353,3 +353,141 @@ def test_graph_commands_work_on_a_case_predating_relationships(tmp_path: Path) -
     path_result = runner.invoke(app, ["graph", "path", str(case_dir), entity.id, entity.id])
     assert path_result.exit_code == 0
     assert "0 hop" in path_result.stdout
+
+    components_result = runner.invoke(app, ["graph", "components", str(case_dir)])
+    assert components_result.exit_code == 0
+    assert "nothing to partition" in components_result.stdout
+
+
+# -- components -----------------------------------------------------------
+
+
+def _make_two_cluster_case(tmp_path: Path) -> Path:
+    """Cluster 1: a 3-cycle A->B->C->A. Cluster 2: X->Y. Plus an
+    isolated entity Z with no relationships at all."""
+    b = _CaseBuilder(tmp_path / "case")
+    b.edge("A", "B")
+    b.edge("B", "C")
+    b.edge("C", "A")
+    b.edge("X", "Y")
+    b.entity("Z")
+    b.finish()
+    return b.case_dir
+
+
+def test_components_on_empty_case_reports_nothing_to_partition(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    case = Case.create(case_dir)
+    case.record_manifest()
+    case.close()
+    result = runner.invoke(app, ["graph", "components", str(case_dir)])
+    assert result.exit_code == 0
+    assert "nothing to partition" in result.stdout
+
+
+def test_components_reports_two_clusters_and_excludes_isolated_entity(
+    tmp_path: Path,
+) -> None:
+    case_dir = _make_two_cluster_case(tmp_path)
+    result = runner.invoke(app, ["graph", "components", str(case_dir)])
+    assert result.exit_code == 0
+    assert "2 component(s)" in result.stdout
+    assert "entity-A" in result.stdout
+    assert "entity-X" in result.stdout
+    assert "entity-Z" not in result.stdout  # isolated entity excluded entirely
+
+
+def test_components_cycle_does_not_hang_and_is_one_component(tmp_path: Path) -> None:
+    case_dir = _make_two_cluster_case(tmp_path)
+    result = runner.invoke(app, ["graph", "components", str(case_dir), "--format", "json"])
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    cycle_component = next(c for c in doc["components"] if "entity-A" in c["entity_ids"])
+    assert set(cycle_component["entity_ids"]) == {"entity-A", "entity-B", "entity-C"}
+    assert len(cycle_component["relationships"]) == 3
+
+
+def test_components_direction_irrelevant_at_cli_level(tmp_path: Path) -> None:
+    """A --connected_to--> B must still join A and B into one component
+    even though `graph neighbors` from B (direction=out) finds nothing."""
+    b = _CaseBuilder(tmp_path / "case")
+    b.edge("A", "B")
+    b.finish()
+    neighbors_from_b = runner.invoke(app, ["graph", "neighbors", str(b.case_dir), "entity-B"])
+    assert "no entities reached" in neighbors_from_b.stdout
+
+    components = runner.invoke(app, ["graph", "components", str(b.case_dir)])
+    assert "entity-A" in components.stdout
+    assert "entity-B" in components.stdout
+
+
+def test_components_min_size_filters_and_reports_totals(tmp_path: Path) -> None:
+    case_dir = _make_two_cluster_case(tmp_path)
+    result = runner.invoke(
+        app, ["graph", "components", str(case_dir), "--min-size", "3"]
+    )
+    assert result.exit_code == 0
+    assert "1 component(s)" in result.stdout
+    assert "entity-X" not in result.stdout  # the 2-entity cluster is filtered out
+
+
+def test_components_min_size_excluding_everything_is_clean_not_an_error(
+    tmp_path: Path,
+) -> None:
+    case_dir = _make_two_cluster_case(tmp_path)
+    result = runner.invoke(
+        app, ["graph", "components", str(case_dir), "--min-size", "10"]
+    )
+    assert result.exit_code == 0
+    assert "no components with at least 10" in result.stdout
+
+
+def test_components_rejects_invalid_min_size(tmp_path: Path) -> None:
+    case_dir = _make_two_cluster_case(tmp_path)
+    result = runner.invoke(app, ["graph", "components", str(case_dir), "--min-size", "0"])
+    assert result.exit_code != 0
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def test_components_rejects_bad_format(tmp_path: Path) -> None:
+    case_dir = _make_two_cluster_case(tmp_path)
+    result = runner.invoke(app, ["graph", "components", str(case_dir), "--format", "xml"])
+    assert result.exit_code != 0
+
+
+def test_components_json_output_is_valid_and_deterministic(tmp_path: Path) -> None:
+    case_dir = _make_two_cluster_case(tmp_path)
+    args = ["graph", "components", str(case_dir), "--format", "json"]
+    first = runner.invoke(app, args)
+    second = runner.invoke(app, args)
+    assert first.exit_code == 0
+    doc = json.loads(first.stdout)
+    assert doc["total_entities_in_graph"] == 5  # A, B, C, X, Y -- not Z
+    assert doc["total_relationships"] == 4
+    assert doc["total_components_found"] == 2
+    assert len(doc["components"]) == 2
+    for component in doc["components"]:
+        for rel in component["relationships"]:
+            assert rel["derived_from"]  # provenance present on every edge
+    assert first.stdout == second.stdout
+
+
+def test_components_provenance_traces_back_to_evidence(tmp_path: Path) -> None:
+    case_dir = _make_two_cluster_case(tmp_path)
+    result = runner.invoke(
+        app, ["graph", "components", str(case_dir), "--min-size", "3", "--format", "json"]
+    )
+    doc = json.loads(result.stdout)
+    component = doc["components"][0]
+    rel_ids = {r["id"] for r in component["relationships"]}
+    assert len(rel_ids) == 3  # three distinct relationships, not deduplicated away
+    for rel in component["relationships"]:
+        assert rel["relationship_type"] == "connected_to"
+        assert len(rel["derived_from"]) == 1
+
+
+def test_components_missing_case_fails_cleanly(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["graph", "components", str(tmp_path / "does-not-exist")])
+    assert result.exit_code != 0
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "does not look like a Witnessgraph case" in _flatten(result.stderr)

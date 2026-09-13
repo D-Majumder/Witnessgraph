@@ -22,6 +22,7 @@ from witnessgraph.correlate.graph import (
     DEFAULT_PATH_MAX_DEPTH,
     MAX_ALLOWED_DEPTH,
     GraphDirection,
+    find_components,
     find_neighbors,
     find_path,
 )
@@ -388,3 +389,168 @@ def test_disconnected_components_do_not_reach_each_other(graph: _Graph) -> None:
     assert reached_ids == {graph.entity("B")}
     path = find_path(graph.case.store, graph.entity("A"), graph.entity("X"))
     assert not path.found
+
+
+# -- find_components ----------------------------------------------------------
+
+
+def test_components_on_empty_graph(tmp_path: Path) -> None:
+    case = Case.create(tmp_path / "case")
+    result = find_components(case.store)
+    assert result.components == ()
+    assert result.total_entities_in_graph == 0
+    assert result.total_relationships == 0
+    assert result.total_components_found == 0
+    case.close()
+
+
+def test_entity_with_no_relationships_is_not_a_component(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    graph.entity("isolated")  # created but never related to anything
+    result = find_components(graph.case.store)
+    all_ids = {eid for c in result.components for eid in c.entity_ids}
+    assert graph.entity("isolated") not in all_ids
+    assert result.total_entities_in_graph == 2  # only A and B
+
+
+def test_single_edge_is_one_component_of_two(graph: _Graph) -> None:
+    rel_id = graph.edge("A", "B")
+    result = find_components(graph.case.store)
+    assert len(result.components) == 1
+    component = result.components[0]
+    assert component.index == 0
+    assert component.entity_ids == tuple(sorted([graph.entity("A"), graph.entity("B")]))
+    assert component.relationships[0].id == rel_id
+
+
+def test_direction_is_irrelevant_to_component_membership(graph: _Graph) -> None:
+    """Unlike find_neighbors/find_path, component membership must ignore
+    relationship direction -- A --connected_to--> B still joins A and B
+    into one component even though `direction="out"` from B would find
+    nothing via find_neighbors."""
+    graph.edge("A", "B")
+    assert find_neighbors(graph.case.store, graph.entity("B")).reached == ()
+    result = find_components(graph.case.store)
+    assert len(result.components) == 1
+    assert set(result.components[0].entity_ids) == {graph.entity("A"), graph.entity("B")}
+
+
+def test_chain_is_one_component(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    graph.edge("B", "C")
+    graph.edge("C", "D")
+    result = find_components(graph.case.store)
+    assert len(result.components) == 1
+    assert set(result.components[0].entity_ids) == {
+        graph.entity(n) for n in ("A", "B", "C", "D")
+    }
+    assert len(result.components[0].relationships) == 3
+
+
+def test_disconnected_clusters_are_separate_components(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    graph.edge("X", "Y")
+    graph.edge("Y", "Z")
+    result = find_components(graph.case.store)
+    assert len(result.components) == 2
+    sizes = sorted(len(c.entity_ids) for c in result.components)
+    assert sizes == [2, 3]
+
+
+def test_components_are_ordered_by_smallest_member_entity_id(graph: _Graph) -> None:
+    graph.edge("X", "Y")  # cluster with larger ids
+    graph.edge("A", "B")  # cluster with smaller ids ("entity-A" < "entity-X")
+    result = find_components(graph.case.store)
+    assert len(result.components) == 2
+    assert result.components[0].index == 0
+    assert result.components[1].index == 1
+    assert min(result.components[0].entity_ids) < min(result.components[1].entity_ids)
+
+
+def test_entities_and_relationships_within_a_component_are_sorted_by_id(
+    graph: _Graph,
+) -> None:
+    graph.edge("C", "A")
+    graph.edge("A", "B")
+    result = find_components(graph.case.store)
+    component = result.components[0]
+    assert list(component.entity_ids) == sorted(component.entity_ids)
+    rel_ids = [r.id for r in component.relationships]
+    assert rel_ids == sorted(rel_ids)
+
+
+def test_cycle_resolves_to_one_component_not_a_hang(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    graph.edge("B", "C")
+    graph.edge("C", "A")
+    result = find_components(graph.case.store)
+    assert len(result.components) == 1
+    assert len(result.components[0].entity_ids) == 3
+    assert len(result.components[0].relationships) == 3
+
+
+def test_parallel_relationships_between_same_pair_both_counted(graph: _Graph) -> None:
+    """Two distinct relationships (different types) between the same pair
+    of entities must both appear in the component's relationship list --
+    neither is a duplicate of the other."""
+    rel1 = graph.edge("A", "B", relationship_type="connected_to")
+    rel2 = graph.edge("A", "B", relationship_type="authenticated_as")
+    result = find_components(graph.case.store)
+    assert len(result.components) == 1
+    rel_ids = {r.id for r in result.components[0].relationships}
+    assert rel_ids == {rel1, rel2}
+
+
+def test_diamond_graph_is_one_component(graph: _Graph) -> None:
+    """A -> B, A -> C, B -> D, C -> D: a diamond shape must not be
+    double-counted or split."""
+    graph.edge("A", "B")
+    graph.edge("A", "C")
+    graph.edge("B", "D")
+    graph.edge("C", "D")
+    result = find_components(graph.case.store)
+    assert len(result.components) == 1
+    assert len(result.components[0].entity_ids) == 4
+    assert len(result.components[0].relationships) == 4
+
+
+def test_min_size_filters_smaller_components(graph: _Graph) -> None:
+    graph.edge("A", "B")  # size 2
+    graph.edge("X", "Y")
+    graph.edge("Y", "Z")  # size 3
+    result = find_components(graph.case.store, min_size=3)
+    assert len(result.components) == 1
+    assert len(result.components[0].entity_ids) == 3
+    assert result.total_components_found == 2  # both exist, only one displayed
+    assert result.total_entities_in_graph == 5  # unaffected by the filter
+
+
+def test_min_size_excluding_everything_reports_zero_displayed(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    result = find_components(graph.case.store, min_size=10)
+    assert result.components == ()
+    assert result.total_components_found == 1
+
+
+def test_min_size_rejects_less_than_one(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    with pytest.raises(ValueError, match="min_size"):
+        find_components(graph.case.store, min_size=0)
+
+
+def test_components_result_independent_of_relationship_insertion_order(
+    tmp_path: Path,
+) -> None:
+    def _build(order: list[tuple[str, str]]) -> list[tuple[str, ...]]:
+        g = _Graph(tmp_path / "".join(f"{a}{b}" for a, b in order))
+        for name in ("A", "B", "C", "X", "Y"):
+            g.entity(name)
+        for a, b in order:
+            g.edge(a, b)
+        result = find_components(g.case.store)
+        g.close()
+        return [c.entity_ids for c in result.components]
+
+    layout_a = _build([("A", "B"), ("B", "C"), ("X", "Y")])
+    layout_b = _build([("X", "Y"), ("B", "C"), ("A", "B")])
+    assert layout_a == layout_b
