@@ -11,9 +11,12 @@ represents hypotheses as explicitly evidence-backed claims (never bare
 facts), and lets a case be exported, handed to someone else, and
 independently reproduced — provenance hash and all.
 
-This is v0.1: the foundation only. See `DESIGN.md` for the locked
-architectural principles and `SECURITY.md` for what this tool does and
-does not do.
+The core object model (evidence, provenance, hypotheses) was locked at
+v0.1 and has not changed since; everything built on top of it —
+contradiction detection, coverage-gap analysis, tracked findings,
+analyst-declared time assertions, JSON reporting — is additive. See
+`DESIGN.md` for the locked architectural principles and `SECURITY.md`
+for what this tool does and does not do.
 
 ## Install (development)
 
@@ -36,25 +39,65 @@ If your environment has 3.12+ available, Witnessgraph runs fine there too
 
 ```sh
 witnessgraph init ./my-case
-witnessgraph ingest ./my-case jsonl ./events.jsonl
+witnessgraph ingest ./my-case jsonl ./events.jsonl --source-id host-a
 witnessgraph timeline ./my-case
+witnessgraph contradictions ./my-case
+witnessgraph gaps ./my-case --min-gap-seconds 300
 witnessgraph hypothesis propose ./my-case "the statement" --evidence <id>
+witnessgraph report ./my-case
 witnessgraph export ./my-case ./my-case.wgcase
 witnessgraph import ./my-case.wgcase ./my-case-restored
-witnessgraph replay ./my-case-restored
+witnessgraph verify ./my-case-restored
 ```
 
-See `examples/sample-case/` for a full worked example.
+See `examples/sample-case/` for a full worked example, and `--help` on
+any command (or command group) below for the exact options.
 
 ## Status
 
-v0.1 foundation: core data model, provenance/manifest hashing, SQLite +
-content-addressed storage, three ingestion adapters (JSONL, CSV timeline,
-syslog), structural time-contradiction detection, and a CLI. No AI
-integration, no graph database, no web UI — see `DESIGN.md` for what is
-deliberately out of scope for this version.
+The core object model (evidence, provenance, hypotheses) is stable at
+v0.1 (`DESIGN.md`'s seven locked principles). Everything else below was
+added afterward, in the same evidence-first style, and is exercised by
+449 tests. There is no AI integration, no graph database, and no web
+UI — this is deliberately a local CLI over a SQLite + content-addressed
+store; see `DESIGN.md` for what stays out of scope by design.
 
-## Coverage gap analysis — known limitations
+### CLI reference
+
+| Command | Purpose |
+| --- | --- |
+| `init` | Create a new, empty case directory. |
+| `ingest <case> <adapter> <source> [--source-id]` | Ingest one evidence source (`jsonl`, `csv_timeline`, or `syslog`) into a case, optionally under an analyst-declared source identity. |
+| `timeline` | Print all normalized events, ordered by earliest known time. |
+| `entities create / list / show` | Create and inspect entities explicitly linked to the evidence that established them. |
+| `time-assertions create` | Record one analyst's explicit, cited claim about when an event occurred. |
+| `hypothesis propose / support / contradict / list` | Manage evidence-backed hypotheses — never bare, unsupported claims. |
+| `contradictions [--track]` | Report structural `TimeAssertion` contradictions, optionally persisting each as a tracked finding. |
+| `gaps --min-gap-seconds [--refine-source-by-attribute] [--track]` | Report deterministic cross-source evidence coverage gaps between analyst-declared sources. |
+| `findings list / show / ack` | Inspect and annotate persisted, tracked gap findings. |
+| `contradiction-findings list / show / ack` | Inspect and annotate persisted, tracked contradiction findings. |
+| `report [--format markdown\|json] [--output]` | Render a case's full investigative content as one deterministic document. |
+| `export` / `import` | Package a case into a portable `.wgcase` archive and restore it elsewhere. |
+| `verify [--report]` | Recompute a case's provenance manifest and confirm it matches the recorded one. |
+| `replay` | Recompute and verify a case's provenance manifest (used internally by `verify`). |
+
+## Project structure
+
+```
+src/witnessgraph/
+├── core/        # Frozen data model: evidence, events, entities, hypotheses, provenance
+├── store/       # SQLite metadata store + content-addressed blob store
+├── ingest/      # Source adapters (jsonl, csv_timeline, syslog) and the ingest pipeline
+├── correlate/   # Contradiction detection and coverage-gap analysis
+├── replay/      # Provenance manifest recomputation/verification
+├── report/      # Deterministic Markdown/JSON report rendering
+├── cli/         # Typer CLI wiring the above into `witnessgraph`
+└── portable.py  # .wgcase export/import
+```
+
+## Known limitations
+
+### Coverage gap analysis
 
 `witnessgraph gaps <case> --min-gap-seconds <N>` reports intervals where
 one analyst-declared source (`--source-id` at ingest time) has no
@@ -91,3 +134,35 @@ A finding is a structural statement about the absence of *recorded*
 evidence relative to another source, never a claim about what did or
 did not physically occur — findings must not be interpreted as proof
 that an event did or did not happen.
+
+### Time assertions and contradictions
+
+`witnessgraph contradictions` detects *structural* disagreement between
+two `TimeAssertion`s about the same event (e.g. two analysts, or an
+adapter and an analyst, citing incompatible times). Witnessgraph never
+adjudicates which claim is correct — a contradiction is recorded and
+left for a human to resolve; there is no "most trusted source" logic
+anywhere in the codebase.
+
+## Testing
+
+```sh
+pytest
+ruff check .
+mypy src
+```
+
+449 tests (unit + integration) exercise the full pipeline, including
+property-based tests (`hypothesis`) for serialization and provenance
+determinism. `ruff` and `mypy --strict` are both clean on `src/`.
+
+## Security
+
+See `SECURITY.md` for the full boundary: no network calls, no network
+listener, no telemetry, and — critically — **no redaction**. Evidence is
+stored and exported verbatim; do not ingest evidence you are not
+comfortable storing as-is.
+
+## License
+
+MIT — see `LICENSE`.
