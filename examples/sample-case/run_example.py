@@ -1,7 +1,7 @@
-"""Runs the full Witnessgraph v0.1 pipeline end-to-end against synthetic sample data.
+"""Runs the full Witnessgraph pipeline end-to-end against synthetic sample data.
 
-ingest -> normalized events -> entities -> timeline -> hypothesis ->
-export -> fresh import -> identical manifest hash.
+ingest -> normalized events -> entities -> relationships -> timeline ->
+hypothesis -> export -> fresh import -> identical manifest hash.
 
 Every step below shells out to the actual `witnessgraph` CLI (via
 ``python -m witnessgraph.cli.main``), so this script is also a real,
@@ -67,11 +67,28 @@ def main() -> None:
     first_evidence_id = probe.store.list_evidence()[0].id
     probe.close()
 
-    run_cli(
+    host_output = run_cli(
         "entities", "create", str(case_dir), "host",
         "--derived-from", first_evidence_id,
         "--id", "hostname=corp-ws-042",
     )
+    host_entity_id = host_output.split()[-1]
+
+    ip_output = run_cli(
+        "entities", "create", str(case_dir), "ip",
+        "--derived-from", first_evidence_id,
+        "--id", "address=203.0.113.7",
+    )
+    ip_entity_id = ip_output.split()[-1]
+
+    # Record the connection the hypothesis below refers to as an explicit,
+    # evidence-backed graph edge -- not a bare, unsupported claim (v1.1).
+    run_cli(
+        "relationships", "create", str(case_dir), "connected_to",
+        "--source", host_entity_id, "--target", ip_entity_id,
+        "--derived-from", first_evidence_id,
+    )
+    run_cli("relationships", "list", str(case_dir))
 
     run_cli("timeline", str(case_dir))
     run_cli("contradictions", str(case_dir))

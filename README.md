@@ -43,6 +43,9 @@ witnessgraph ingest ./my-case jsonl ./events.jsonl --source-id host-a
 witnessgraph timeline ./my-case
 witnessgraph contradictions ./my-case
 witnessgraph gaps ./my-case --min-gap-seconds 300
+witnessgraph entities create ./my-case host --derived-from <evidence-id> --id hostname=host-a
+witnessgraph relationships create ./my-case connected_to \
+  --source <host-entity-id> --target <ip-entity-id> --derived-from <evidence-id>
 witnessgraph hypothesis propose ./my-case "the statement" --evidence <id>
 witnessgraph report ./my-case
 witnessgraph export ./my-case ./my-case.wgcase
@@ -58,7 +61,7 @@ any command (or command group) below for the exact options.
 The core object model (evidence, provenance, hypotheses) is stable at
 v0.1 (`DESIGN.md`'s seven locked principles). Everything else below was
 added afterward, in the same evidence-first style, and is exercised by
-449 tests. There is no AI integration, no graph database, and no web
+524 tests. There is no AI integration, no graph database, and no web
 UI — this is deliberately a local CLI over a SQLite + content-addressed
 store; see `DESIGN.md` for what stays out of scope by design.
 
@@ -70,6 +73,7 @@ store; see `DESIGN.md` for what stays out of scope by design.
 | `ingest <case> <adapter> <source> [--source-id]` | Ingest one evidence source (`jsonl`, `csv_timeline`, or `syslog`) into a case, optionally under an analyst-declared source identity. |
 | `timeline` | Print all normalized events, ordered by earliest known time. |
 | `entities create / list / show` | Create and inspect entities explicitly linked to the evidence that established them. |
+| `relationships create / list / show [--entity]` | Create and inspect directed, evidence-backed relationships (graph edges) between two entities. |
 | `time-assertions create` | Record one analyst's explicit, cited claim about when an event occurred. |
 | `hypothesis propose / support / contradict / list` | Manage evidence-backed hypotheses — never bare, unsupported claims. |
 | `contradictions [--track]` | Report structural `TimeAssertion` contradictions, optionally persisting each as a tracked finding. |
@@ -85,7 +89,7 @@ store; see `DESIGN.md` for what stays out of scope by design.
 
 ```
 src/witnessgraph/
-├── core/        # Frozen data model: evidence, events, entities, hypotheses, provenance
+├── core/        # Frozen data model: evidence, events, entities, relationships, hypotheses, provenance
 ├── store/       # SQLite metadata store + content-addressed blob store
 ├── ingest/      # Source adapters (jsonl, csv_timeline, syslog) and the ingest pipeline
 ├── correlate/   # Contradiction detection and coverage-gap analysis
@@ -94,6 +98,73 @@ src/witnessgraph/
 ├── cli/         # Typer CLI wiring the above into `witnessgraph`
 └── portable.py  # .wgcase export/import
 ```
+
+## Relationships
+
+Witnessgraph's data model has always had a graph's *nodes* (`Entity`)
+but, through v1.0, no *edges* — no way to record that two entities were
+observed to be connected. `Relationship` (v1.1) closes that gap: a
+directed, evidence-backed claim that a source entity and a target entity
+are related, with the same discipline as everything else in
+Witnessgraph — it must cite the evidence it is grounded in, it is never
+inferred automatically, and it is immutable once created.
+
+This exists because an investigation is rarely about isolated facts —
+it's about how entities relate (a host connected to an IP, a user
+authenticated on a host, a process that spawned another process).
+Recording those connections explicitly turns a case from a list of
+individually-supported claims into an explorable graph, without
+compromising the evidence-first model everything else here follows.
+
+```sh
+witnessgraph entities create ./my-case host --derived-from <ev-id> --id hostname=corp-ws-1
+witnessgraph entities create ./my-case ip --derived-from <ev-id> --id address=203.0.113.7
+witnessgraph relationships create ./my-case connected_to \
+  --source <host-entity-id> --target <ip-entity-id> \
+  --derived-from <ev-id> --attribute protocol=tcp
+witnessgraph relationships list ./my-case
+witnessgraph relationships list ./my-case --entity <host-entity-id>
+witnessgraph relationships show ./my-case <relationship-id>
+```
+
+`relationships show` output:
+
+```json
+{
+  "id": "3f9c1e...",
+  "relationship_type": "connected_to",
+  "source_entity_id": "c0000000-...-01",
+  "target_entity_id": "c0000000-...-02",
+  "attributes": {"protocol": "tcp"},
+  "derived_from": ["23da92a4..."],
+  "created_at": "2026-01-01T12:00:00Z"
+}
+```
+
+Relationships appear in both report formats (`report` / `report --format
+json`), are covered by the provenance manifest exactly like every other
+object type, and survive export/import unchanged.
+
+**Limitations:** `relationship_type` is a free-form, analyst-declared
+label — Witnessgraph does not constrain its vocabulary, infer a reverse
+edge, or attempt any automatic relationship discovery. `--source`/
+`--target` must already name existing entities; there is no automatic
+entity creation. `relationships create` is idempotent (a `Relationship`'s
+id is content-derived, like `TimeAssertion`) — re-running it with
+identical arguments converges rather than duplicates.
+
+Because this adds a sixth collection (`relationships`) to what the
+provenance manifest hashes, the manifest algorithm version bumped from 2
+to 3. This changes every case's manifest hash, even one with zero
+relationships — exactly as the v0.1/v0.2 → v0.3 change already did once
+before. A case created before this version keeps working unchanged (its
+`relationships` table is created empty, lazily, the next time it's
+opened), but `verify`/`replay` against its old recorded manifest reports
+`NOT COMPARABLE`, not a false `MISMATCH`. Any command that mutates the
+case (`ingest`, `entities create`, `relationships create`, ...) already
+re-records its manifest under the current algorithm as a side effect, so
+a case simply becomes freshly comparable (v3-to-v3) the next time
+something is added to it.
 
 ## Known limitations
 
@@ -162,7 +233,7 @@ ruff check .
 mypy src
 ```
 
-449 tests (unit + integration) exercise the full pipeline, including
+524 tests (unit + integration) exercise the full pipeline, including
 property-based tests (`hypothesis`) for serialization and provenance
 determinism. `ruff` and `mypy --strict` are both clean on `src/`.
 
