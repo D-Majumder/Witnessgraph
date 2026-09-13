@@ -26,6 +26,15 @@ COMMANDS: list[tuple[str, list[str]]] = [
     ("entities-list", ["entities", "list", "{case}"]),
     ("entities-show", ["entities", "show", "{case}", "some-id"]),
     ("entities-create", ["entities", "create", "{case}", "host", "--derived-from", "some-id"]),
+    ("relationships-list", ["relationships", "list", "{case}"]),
+    ("relationships-show", ["relationships", "show", "{case}", "some-id"]),
+    (
+        "relationships-create",
+        [
+            "relationships", "create", "{case}", "connected_to",
+            "--source", "a", "--target", "b", "--derived-from", "some-id",
+        ],
+    ),
     ("hypothesis-list", ["hypothesis", "list", "{case}"]),
     ("gaps", ["gaps", "{case}", "--min-gap-seconds", "60"]),
     ("contradictions", ["contradictions", "{case}"]),

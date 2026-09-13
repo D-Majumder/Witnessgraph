@@ -8,6 +8,7 @@ from pathlib import Path
 from witnessgraph.core.events import NormalizedEvent
 from witnessgraph.core.evidence import EvidenceItem
 from witnessgraph.core.hypothesis import EvidenceRef, Hypothesis, HypothesisStatus
+from witnessgraph.core.relationships import Relationship
 from witnessgraph.core.time_model import TimeAssertion, TimePrecision
 from witnessgraph.store.case import Case
 from witnessgraph.store.sqlite_store import FileBlobStore
@@ -27,6 +28,56 @@ def test_evidence_round_trips_through_store(tmp_path: Path) -> None:
     case.store.put_evidence(item)
     fetched = case.store.get_evidence(item.id)
     assert fetched == item
+    case.close()
+
+
+def test_relationship_round_trips_through_store(tmp_path: Path) -> None:
+    case = Case.create(tmp_path / "case")
+    rel = Relationship.create(
+        relationship_type="connected_to",
+        source_entity_id="entity-a",
+        target_entity_id="entity-b",
+        derived_from=("ev-1",),
+        created_at=NOW,
+        attributes={"protocol": "tcp"},
+    )
+    case.store.put_relationship(rel)
+    fetched = case.store.get_relationship(rel.id)
+    assert fetched == rel
+    case.close()
+
+
+def test_relationship_put_is_idempotent_by_content_derived_id(tmp_path: Path) -> None:
+    """Re-running `relationships create` with identical arguments must
+    converge, not duplicate -- mirrors TimeAssertion's put semantics."""
+    case = Case.create(tmp_path / "case")
+    rel = Relationship.create(
+        relationship_type="connected_to",
+        source_entity_id="entity-a",
+        target_entity_id="entity-b",
+        derived_from=("ev-1",),
+        created_at=NOW,
+    )
+    rel_again = Relationship.create(
+        relationship_type="connected_to",
+        source_entity_id="entity-a",
+        target_entity_id="entity-b",
+        derived_from=("ev-1",),
+        created_at=NOW.replace(year=2030),  # different wall clock, same identity
+    )
+    assert rel.id == rel_again.id
+    case.store.put_relationship(rel)
+    case.store.put_relationship(rel_again)
+    assert len(case.store.list_relationships()) == 1
+    stored = case.store.get_relationship(rel.id)
+    assert stored is not None
+    assert stored.created_at == rel.created_at  # first write wins, no overwrite
+    case.close()
+
+
+def test_relationship_not_found_returns_none(tmp_path: Path) -> None:
+    case = Case.create(tmp_path / "case")
+    assert case.store.get_relationship("no-such-id") is None
     case.close()
 
 
