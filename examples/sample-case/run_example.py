@@ -1,7 +1,8 @@
 """Runs the full Witnessgraph pipeline end-to-end against synthetic sample data.
 
-ingest -> normalized events -> entities -> relationships -> timeline ->
-hypothesis -> export -> fresh import -> identical manifest hash.
+ingest -> normalized events -> entities -> relationships -> graph
+traversal -> timeline -> hypothesis -> export -> fresh import ->
+identical manifest hash.
 
 Every step below shells out to the actual `witnessgraph` CLI (via
 ``python -m witnessgraph.cli.main``), so this script is also a real,
@@ -81,14 +82,33 @@ def main() -> None:
     )
     ip_entity_id = ip_output.split()[-1]
 
-    # Record the connection the hypothesis below refers to as an explicit,
-    # evidence-backed graph edge -- not a bare, unsupported claim (v1.1).
+    user_output = run_cli(
+        "entities", "create", str(case_dir), "user",
+        "--derived-from", first_evidence_id,
+        "--id", "username=jsmith",
+    )
+    user_entity_id = user_output.split()[-1]
+
+    # Record the connections the hypothesis below refers to as explicit,
+    # evidence-backed graph edges -- not bare, unsupported claims (v1.1):
+    # jsmith authenticated on the workstation, which then connected out.
+    run_cli(
+        "relationships", "create", str(case_dir), "authenticated_as",
+        "--source", user_entity_id, "--target", host_entity_id,
+        "--derived-from", first_evidence_id,
+    )
     run_cli(
         "relationships", "create", str(case_dir), "connected_to",
         "--source", host_entity_id, "--target", ip_entity_id,
         "--derived-from", first_evidence_id,
     )
     run_cli("relationships", "list", str(case_dir))
+
+    # Graph analysis (v1.1): what is the workstation directly connected
+    # to, and how -- if at all -- does jsmith's user account connect
+    # through to the external ip, two hops away?
+    run_cli("graph", "neighbors", str(case_dir), host_entity_id)
+    run_cli("graph", "path", str(case_dir), user_entity_id, ip_entity_id)
 
     run_cli("timeline", str(case_dir))
     run_cli("contradictions", str(case_dir))

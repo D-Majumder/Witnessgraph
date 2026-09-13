@@ -1,8 +1,9 @@
 # Sample case
 
 A fully synthetic worked example demonstrating the full pipeline:
-ingest → normalized events → entities → relationships → timeline →
-hypothesis → export → fresh import → identical manifest hash.
+ingest → normalized events → entities → relationships → graph traversal
+→ timeline → hypothesis → export → fresh import → identical manifest
+hash.
 
 All data in `data/` is hand-authored and synthetic. No real logs,
 credentials, IPs, or personal data of any kind. See `SECURITY.md`.
@@ -25,16 +26,21 @@ the whole point (DESIGN.md principle 4).
 2. `witnessgraph ingest` (×3) — JSONL, CSV timeline, and syslog adapters,
    each producing EvidenceItem/NormalizedEvent pairs and, where a
    `timestamp` was present and unambiguous, a TimeAssertion.
-3. `witnessgraph entities create` (×2) — a host and an ip entity, each
-   linked explicitly to the evidence they were derived from (Witnessgraph
-   does not auto-resolve entities).
-4. `witnessgraph relationships create` — a directed, evidence-backed
-   edge (`connected_to`) between the two entities (v1.1).
-5. `witnessgraph timeline` — events ordered by their earliest known time.
-6. `witnessgraph contradictions` — structural TimeAssertion conflict check.
-7. `witnessgraph hypothesis propose` / `support` — an evidence-backed claim.
-8. `witnessgraph export` / `import` — round-trip through a portable
+3. `witnessgraph entities create` (×3) — a host, an ip, and a user
+   entity, each linked explicitly to the evidence they were derived from
+   (Witnessgraph does not auto-resolve entities).
+4. `witnessgraph relationships create` (×2) — directed, evidence-backed
+   edges: the user `authenticated_as` the host, and the host
+   `connected_to` the ip (v1.1).
+5. `witnessgraph graph neighbors` / `graph path` — the host's direct
+   neighbors, and the deterministic two-hop chain from the user entity
+   through the host to the ip, with full relationship/evidence
+   provenance for each step.
+6. `witnessgraph timeline` — events ordered by their earliest known time.
+7. `witnessgraph contradictions` — structural TimeAssertion conflict check.
+8. `witnessgraph hypothesis propose` / `support` — an evidence-backed claim.
+9. `witnessgraph export` / `import` — round-trip through a portable
    `.wgcase` archive.
-9. `witnessgraph replay` — independently recompute the provenance
-   manifest of both the original and the freshly imported case, and
-   confirm the hashes match.
+10. `witnessgraph replay` — independently recompute the provenance
+    manifest of both the original and the freshly imported case, and
+    confirm the hashes match.

@@ -14,7 +14,8 @@ independently reproduced — provenance hash and all.
 The core object model (evidence, provenance, hypotheses) was locked at
 v0.1 and has not changed since; everything built on top of it —
 contradiction detection, coverage-gap analysis, tracked findings,
-analyst-declared time assertions, JSON reporting — is additive. See
+analyst-declared time assertions, JSON reporting, directed relationships
+between entities, and bounded graph traversal — is additive. See
 `DESIGN.md` for the locked architectural principles and `SECURITY.md`
 for what this tool does and does not do.
 
@@ -61,7 +62,7 @@ any command (or command group) below for the exact options.
 The core object model (evidence, provenance, hypotheses) is stable at
 v0.1 (`DESIGN.md`'s seven locked principles). Everything else below was
 added afterward, in the same evidence-first style, and is exercised by
-524 tests. There is no AI integration, no graph database, and no web
+582 tests. There is no AI integration, no graph database, and no web
 UI — this is deliberately a local CLI over a SQLite + content-addressed
 store; see `DESIGN.md` for what stays out of scope by design.
 
@@ -74,6 +75,8 @@ store; see `DESIGN.md` for what stays out of scope by design.
 | `timeline` | Print all normalized events, ordered by earliest known time. |
 | `entities create / list / show` | Create and inspect entities explicitly linked to the evidence that established them. |
 | `relationships create / list / show [--entity]` | Create and inspect directed, evidence-backed relationships (graph edges) between two entities. |
+| `graph neighbors <entity> [--max-depth] [--direction]` | List every entity reachable from one entity within a bounded number of hops. |
+| `graph path <source> <target> [--max-depth] [--direction]` | Find one deterministic, shortest relationship chain between two entities, with full provenance. |
 | `time-assertions create` | Record one analyst's explicit, cited claim about when an event occurred. |
 | `hypothesis propose / support / contradict / list` | Manage evidence-backed hypotheses — never bare, unsupported claims. |
 | `contradictions [--track]` | Report structural `TimeAssertion` contradictions, optionally persisting each as a tracked finding. |
@@ -92,7 +95,7 @@ src/witnessgraph/
 ├── core/        # Frozen data model: evidence, events, entities, relationships, hypotheses, provenance
 ├── store/       # SQLite metadata store + content-addressed blob store
 ├── ingest/      # Source adapters (jsonl, csv_timeline, syslog) and the ingest pipeline
-├── correlate/   # Contradiction detection and coverage-gap analysis
+├── correlate/   # Contradiction detection, coverage-gap analysis, graph traversal
 ├── replay/      # Provenance manifest recomputation/verification
 ├── report/      # Deterministic Markdown/JSON report rendering
 ├── cli/         # Typer CLI wiring the above into `witnessgraph`
@@ -166,6 +169,71 @@ re-records its manifest under the current algorithm as a side effect, so
 a case simply becomes freshly comparable (v3-to-v3) the next time
 something is added to it.
 
+## Graph Analysis
+
+Relationships give Witnessgraph edges; `witnessgraph graph` is what makes
+them analyzable. It does not introduce a second graph model or an
+external graph database — it's a small, deterministic traversal layer
+over exactly the `Entity`/`Relationship` data already in the case's
+SQLite store, built once per invocation and searched with a plain,
+bounded breadth-first search.
+
+**Directed by default.** A `Relationship` is directed
+(`source_entity_id -> target_entity_id`); both commands default to
+`--direction out`, following only that arrow. `witnessgraph
+graph path B A` does **not** find a path along an edge recorded as
+`A -[connected_to]-> B` unless you explicitly ask for it:
+`--direction in` follows edges backward, `--direction both` follows
+either way. Whichever way an edge is walked, the relationship reported
+is always exactly as stored — its own source/target are never swapped;
+the output separately marks each step as `forward` or `backward` so
+direction is never hidden.
+
+**Bounded, not exhaustive.** `graph neighbors` reports every entity
+reachable within `--max-depth` hops (default 1: direct neighbors only).
+`graph path` returns **one** deterministic, shortest (fewest-hop) chain
+— never "all paths" — within `--max-depth` hops (default 10), tie-broken
+by relationship id when more than one shortest chain exists, never by
+incidental storage order. `--max-depth` is capped at 50. A cycle
+anywhere in the graph cannot cause an infinite search: an entity is only
+ever discovered once.
+
+```sh
+witnessgraph graph neighbors ./my-case <entity-id>
+witnessgraph graph neighbors ./my-case <entity-id> --max-depth 3 --direction both
+witnessgraph graph path ./my-case <source-entity-id> <target-entity-id>
+witnessgraph graph path ./my-case <source-entity-id> <target-entity-id> --format json
+```
+
+Example `graph path` output:
+
+```
+path found: 2 hop(s)
+step 1: <A> --[connected_to via `<rel-1>`, forward]--> <B> (derived_from: `<ev-1>`)
+step 2: <B> --[resolved_from via `<rel-2>`, forward]--> <C> (derived_from: `<ev-2>`)
+```
+
+"No path found within N hops" is a normal, successful result (exit code
+0), not an error — it means the search completed and found nothing,
+which is different from an invalid request like an unknown entity id
+(exit code 1). `--format json` represents "not found" as data
+(`"found": false, "steps": []`), never as an exception, for scripting.
+
+**Provenance, not conclusions.** Every step names its relationship id,
+type, and `derived_from` evidence — a result is fully auditable back to
+what was actually recorded. A path or neighborhood describes a
+*structural connection*, evidenced by cited relationships, and nothing
+more: it is never itself a claim of causation, responsibility, or truth.
+
+**Limitations:** no entity resolution or fuzzy matching is performed —
+two different entity ids are always treated as different entities, even
+if they plausibly refer to the same real-world thing (consistent with
+`entities create`'s own v1.0 scope). There is no "all paths" or induced-
+subgraph command; only bounded neighborhoods and one shortest path.
+Graph analysis is not integrated into `report` — it stays a dedicated
+CLI output so an ordinary report never pays for a traversal it didn't
+ask for.
+
 ## Known limitations
 
 ### Scripting against the CLI in your own CI/automation
@@ -233,7 +301,7 @@ ruff check .
 mypy src
 ```
 
-524 tests (unit + integration) exercise the full pipeline, including
+582 tests (unit + integration) exercise the full pipeline, including
 property-based tests (`hypothesis`) for serialization and provenance
 determinism. `ruff` and `mypy --strict` are both clean on `src/`.
 
