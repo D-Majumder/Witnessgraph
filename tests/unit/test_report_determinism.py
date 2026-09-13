@@ -70,6 +70,9 @@ class _FakeStore:
     def put_time_assertion(self, assertion: TimeAssertion) -> None:
         self.time_assertions[assertion.id] = assertion
 
+    def get_time_assertion(self, id: str) -> TimeAssertion | None:
+        return self.time_assertions.get(id)
+
     def list_time_assertions(self) -> list[TimeAssertion]:
         return list(self.time_assertions.values())
 

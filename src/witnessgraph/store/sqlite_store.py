@@ -245,6 +245,12 @@ class SqliteStore:
         )
         self._maybe_commit()
 
+    def get_time_assertion(self, id: str) -> TimeAssertion | None:
+        row = self._conn.execute(
+            "SELECT data FROM time_assertions WHERE id = ?", (id,)
+        ).fetchone()
+        return TimeAssertion.model_validate_json(row[0]) if row else None
+
     def list_time_assertions(self) -> list[TimeAssertion]:
         rows = self._conn.execute("SELECT data FROM time_assertions ORDER BY id").fetchall()
         return [TimeAssertion.model_validate_json(r[0]) for r in rows]

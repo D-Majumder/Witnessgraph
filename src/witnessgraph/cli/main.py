@@ -14,7 +14,7 @@ from witnessgraph.core.entities import Entity
 from witnessgraph.core.events import NormalizedEvent
 from witnessgraph.core.evidence import validate_source_id
 from witnessgraph.core.hypothesis import EvidenceRef, Hypothesis, HypothesisStatus
-from witnessgraph.core.time_model import TimeAssertion
+from witnessgraph.core.time_model import TimeAssertion, TimePrecision
 from witnessgraph.core.tracked_finding import FindingStatus, TrackedGapFinding
 from witnessgraph.core.tracked_time_contradiction import TrackedTimeContradiction
 from witnessgraph.correlate.contradiction_tracking import track_contradictions
@@ -48,10 +48,22 @@ contradiction_findings_app = typer.Typer(
     ),
     no_args_is_help=True,
 )
+time_assertions_app = typer.Typer(
+    help=(
+        "Record explicit, analyst-declared TimeAssertion claims in a case "
+        "(v1.0). A TimeAssertion created here is one named analyst's claim, "
+        "grounded in cited evidence, about when a NormalizedEvent occurred -- "
+        "never an adjudicated fact. Witnessgraph does not resolve disagreeing "
+        "claims about the same event into one true timestamp; see "
+        "`witnessgraph contradiction-findings`."
+    ),
+    no_args_is_help=True,
+)
 app.add_typer(entities_app, name="entities")
 app.add_typer(hypothesis_app, name="hypothesis")
 app.add_typer(findings_app, name="findings")
 app.add_typer(contradiction_findings_app, name="contradiction-findings")
+app.add_typer(time_assertions_app, name="time-assertions")
 
 
 def _resolve_evidence_ref(case: Case, ref_id: str) -> EvidenceRef:
@@ -188,6 +200,118 @@ def entities_show(case_dir: Path, entity_id: str) -> None:
         typer.echo(f"no such entity: {entity_id}", err=True)
         raise typer.Exit(1)
     typer.echo(entity.model_dump_json(indent=2))
+
+
+@time_assertions_app.command("create")
+def time_assertions_create(
+    case_dir: Path = typer.Argument(..., help="Case directory to modify."),
+    event_id: str = typer.Argument(..., help="NormalizedEvent id this claim is about."),
+    value: str = typer.Option(
+        ...,
+        "--value",
+        help=(
+            "Timezone-aware ISO-8601 timestamp this claim asserts for the "
+            "event. A naive (no offset/zone) timestamp is rejected rather "
+            "than assumed to be in some particular timezone."
+        ),
+    ),
+    precision: TimePrecision = typer.Option(
+        ...,
+        "--precision",
+        help="Precision of the claimed value: exact, second, minute, hour, day, or approximate.",
+    ),
+    source_evidence: str = typer.Option(
+        ...,
+        "--source-evidence",
+        help=(
+            "Required: id of the EvidenceItem this claim is grounded in. "
+            "Only checked for existence -- it is not required to be among "
+            "the subject event's own derived_from evidence, since a claim "
+            "may legitimately be grounded in evidence external to the "
+            "event it is about."
+        ),
+    ),
+    by: str = typer.Option(
+        ...,
+        "--by",
+        help=(
+            "Required: the analyst identity making this claim. There is no "
+            "default -- an analyst identity is never invented or inferred "
+            "by this tool. Must not be blank or whitespace-only. This tool "
+            "never adjudicates whose claim is correct; it only records who "
+            "is making it and what evidence it is grounded in."
+        ),
+    ),
+) -> None:
+    """Record one analyst's explicit claim about when a NormalizedEvent occurred.
+
+    This creates a TimeAssertion: a specific person's claim, grounded in
+    cited evidence, about an event's time -- not an adjudicated fact.
+    Multiple, even disagreeing, claims about the same event are preserved
+    side by side (see `witnessgraph contradiction-findings`); this command
+    never resolves or overwrites an existing claim, and re-running it with
+    identical arguments is a safe, idempotent no-op.
+    """
+    if not by.strip():
+        raise typer.BadParameter(
+            "must not be blank or whitespace-only -- an analyst identity is "
+            "never invented or inferred by this tool",
+            param_hint="--by",
+        )
+    try:
+        parsed_value = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            f"{value!r} is not a valid ISO-8601 timestamp", param_hint="--value"
+        ) from exc
+    if parsed_value.tzinfo is None:
+        raise typer.BadParameter(
+            "must be timezone-aware -- an ambiguous (naive) timestamp is "
+            "never assumed to be in some particular timezone",
+            param_hint="--value",
+        )
+
+    case = Case.open(case_dir)
+    if case.store.get_normalized_event(event_id) is None:
+        case.close()
+        raise typer.BadParameter(
+            f"{event_id!r} is not a known NormalizedEvent id", param_hint="event_id"
+        )
+    if case.store.get_evidence(source_evidence) is None:
+        case.close()
+        raise typer.BadParameter(
+            f"{source_evidence!r} is not a known EvidenceItem id",
+            param_hint="--source-evidence",
+        )
+
+    assertion = TimeAssertion.create(
+        subject_event_id=event_id,
+        value=parsed_value,
+        precision=precision,
+        source_evidence_id=source_evidence,
+        asserted_by=by,
+        created_at=datetime.now(UTC),
+    )
+    already_existed = case.store.get_time_assertion(assertion.id) is not None
+    case.store.put_time_assertion(assertion)
+    case.record_manifest()
+    case.close()
+
+    if already_existed:
+        typer.echo(
+            f"time assertion {assertion.id} already exists -- unchanged: "
+            f"a claim by analyst {by!r} that event {event_id} occurred at "
+            f"{parsed_value.isoformat()} ({precision.value} precision), "
+            f"grounded in evidence {source_evidence}"
+        )
+    else:
+        typer.echo(
+            f"created time assertion {assertion.id}: a claim by analyst "
+            f"{by!r} that event {event_id} occurred at "
+            f"{parsed_value.isoformat()} ({precision.value} precision) -- "
+            f"this event's coverage is attributed to evidence "
+            f"{source_evidence} via analyst {by!r}"
+        )
 
 
 @app.command()

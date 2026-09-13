@@ -5,8 +5,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+from witnessgraph.core.events import NormalizedEvent
 from witnessgraph.core.evidence import EvidenceItem
 from witnessgraph.core.hypothesis import EvidenceRef, Hypothesis, HypothesisStatus
+from witnessgraph.core.time_model import TimeAssertion, TimePrecision
 from witnessgraph.store.case import Case
 from witnessgraph.store.sqlite_store import FileBlobStore
 
@@ -116,6 +118,34 @@ def test_duplicate_content_from_different_sources_preserves_both_provenance(
     assert locators == {"file1.jsonl:1", "file2.jsonl:5"}
 
     assert len(case.store.list_evidence()) == 1  # still one logical evidence item
+    case.close()
+
+
+def test_get_time_assertion_returns_none_for_unknown_id(tmp_path: Path) -> None:
+    case = Case.create(tmp_path / "case")
+    assert case.store.get_time_assertion("nonexistent") is None
+    case.close()
+
+
+def test_time_assertion_round_trips_through_get(tmp_path: Path) -> None:
+    case = Case.create(tmp_path / "case")
+    evidence = EvidenceItem.create(
+        raw_bytes=b"payload", source_adapter="test", adapter_version="0.0.0",
+        source_locator="x", collected_at=NOW,
+    )
+    case.store.put_evidence(evidence)
+    event = NormalizedEvent.create(
+        event_type="line", attributes={}, derived_from=(evidence.id,), created_at=NOW
+    )
+    case.store.put_normalized_event(event)
+    assertion = TimeAssertion.create(
+        subject_event_id=event.id, value=NOW, precision=TimePrecision.SECOND,
+        source_evidence_id=evidence.id, asserted_by="analyst:jane", created_at=NOW,
+    )
+    case.store.put_time_assertion(assertion)
+
+    fetched = case.store.get_time_assertion(assertion.id)
+    assert fetched == assertion
     case.close()
 
 
