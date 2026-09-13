@@ -45,6 +45,22 @@ def test_minute_precision_does_not_tolerate_large_gap() -> None:
     assert a.disagrees_with(b)
 
 
+def test_minute_precision_exact_boundary_gap_does_not_disagree() -> None:
+    """delta == tolerance is agreement, not disagreement (disagrees_with
+    uses strict `>`) -- MINUTE's tolerance is 60s each, so a summed 120s
+    gap is the exact boundary."""
+    a = _assertion(NOW, TimePrecision.MINUTE)
+    b = _assertion(NOW + timedelta(seconds=120), TimePrecision.MINUTE)
+    assert not a.disagrees_with(b)
+    assert not b.disagrees_with(a)
+
+
+def test_minute_precision_one_second_past_boundary_disagrees() -> None:
+    a = _assertion(NOW, TimePrecision.MINUTE)
+    b = _assertion(NOW + timedelta(seconds=121), TimePrecision.MINUTE)
+    assert a.disagrees_with(b)
+
+
 def test_different_subjects_never_disagree() -> None:
     a = _assertion(NOW, TimePrecision.EXACT, subject="evt-1")
     b = _assertion(NOW + timedelta(days=1), TimePrecision.EXACT, subject="evt-2")
