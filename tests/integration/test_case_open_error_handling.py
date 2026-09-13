@@ -35,6 +35,8 @@ COMMANDS: list[tuple[str, list[str]]] = [
             "--source", "a", "--target", "b", "--derived-from", "some-id",
         ],
     ),
+    ("graph-neighbors", ["graph", "neighbors", "{case}", "some-id"]),
+    ("graph-path", ["graph", "path", "{case}", "a", "b"]),
     ("hypothesis-list", ["hypothesis", "list", "{case}"]),
     ("gaps", ["gaps", "{case}", "--min-gap-seconds", "60"]),
     ("contradictions", ["contradictions", "{case}"]),
