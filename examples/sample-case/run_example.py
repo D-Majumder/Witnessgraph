@@ -104,11 +104,13 @@ def main() -> None:
     )
     run_cli("relationships", "list", str(case_dir))
 
-    # Graph analysis (v1.1): what is the workstation directly connected
-    # to, and how -- if at all -- does jsmith's user account connect
-    # through to the external ip, two hops away?
+    # Graph analysis: what is the workstation directly connected to, and
+    # how -- if at all -- does jsmith's user account connect through to
+    # the external ip, two hops away (v1.1)? Do these three entities form
+    # one connected cluster, or several unrelated ones?
     run_cli("graph", "neighbors", str(case_dir), host_entity_id)
     run_cli("graph", "path", str(case_dir), user_entity_id, ip_entity_id)
+    run_cli("graph", "components", str(case_dir))
 
     run_cli("timeline", str(case_dir))
     run_cli("contradictions", str(case_dir))

@@ -62,7 +62,7 @@ any command (or command group) below for the exact options.
 The core object model (evidence, provenance, hypotheses) is stable at
 v0.1 (`DESIGN.md`'s seven locked principles). Everything else below was
 added afterward, in the same evidence-first style, and is exercised by
-582 tests. There is no AI integration, no graph database, and no web
+610 tests. There is no AI integration, no graph database, and no web
 UI — this is deliberately a local CLI over a SQLite + content-addressed
 store; see `DESIGN.md` for what stays out of scope by design.
 
@@ -77,6 +77,7 @@ store; see `DESIGN.md` for what stays out of scope by design.
 | `relationships create / list / show [--entity]` | Create and inspect directed, evidence-backed relationships (graph edges) between two entities. |
 | `graph neighbors <entity> [--max-depth] [--direction]` | List every entity reachable from one entity within a bounded number of hops. |
 | `graph path <source> <target> [--max-depth] [--direction]` | Find one deterministic, shortest relationship chain between two entities, with full provenance. |
+| `graph components [--min-size]` | Partition every related entity into weakly-connected clusters, direction-independent. |
 | `time-assertions create` | Record one analyst's explicit, cited claim about when an event occurred. |
 | `hypothesis propose / support / contradict / list` | Manage evidence-backed hypotheses — never bare, unsupported claims. |
 | `contradictions [--track]` | Report structural `TimeAssertion` contradictions, optionally persisting each as a tracked finding. |
@@ -225,14 +226,66 @@ what was actually recorded. A path or neighborhood describes a
 *structural connection*, evidenced by cited relationships, and nothing
 more: it is never itself a claim of causation, responsibility, or truth.
 
+### Connected components
+
+`witnessgraph graph components` answers a different question from
+`neighbors`/`path`: not "what is reachable from this one entity" but
+"how does this case's whole relationship graph break down into
+independent clusters". It partitions every entity that appears in at
+least one relationship into groups where every member is joined to every
+other member by some chain of relationships.
+
+This is the one graph command that treats direction as irrelevant —
+`A --connected_to--> B` puts A and B in the same cluster exactly as
+`B --connected_to--> A` would, because cluster membership and
+point-to-point reachability are genuinely different questions (`graph
+path B A` still would not find that edge without `--direction in`/
+`both`). An entity with zero relationships is not part of any cluster —
+it is never reported as a trivial cluster of its own.
+
+```sh
+witnessgraph graph components ./my-case
+witnessgraph graph components ./my-case --min-size 3
+witnessgraph graph components ./my-case --format json
+```
+
+Example output:
+
+```
+2 component(s) covering 5 of 5 entities in the relationship graph (4 relationship(s) total; min-size=1)
+- component 0: 3 entities, 3 relationship(s)
+  entities: `<A>`, `<B>`, `<C>`
+  - `<rel-1>`: <A> -[connected_to]-> <B> (derived_from: `<ev-1>`)
+  - `<rel-2>`: <B> -[connected_to]-> <C> (derived_from: `<ev-1>`)
+  - `<rel-3>`: <C> -[connected_to]-> <A> (derived_from: `<ev-1>`)
+- component 1: 2 entities, 1 relationship(s)
+  entities: `<X>`, `<Y>`
+  - `<rel-4>`: <X> -[connected_to]-> <Y> (derived_from: `<ev-2>`)
+```
+
+Components are ordered by their smallest member entity id, and entities/
+relationships within a component are each sorted by id — a property of
+the graph itself, not of insertion order, so this never needs a
+traversal tie-break the way `path` does. `--min-size` (default 1: show
+everything) filters small clusters out of the *displayed* result without
+changing what was actually computed; every component has at least 2
+entities by construction, so `--min-size 1`/`2` are equivalent. A cycle
+resolves to one ordinary component, never a hang or a duplicate count. A
+`.json` result is the same partition as data: `total_entities_in_graph`
+and `total_relationships` describe the whole graph, `total_components_found`
+is the count before `--min-size` filtering, and every relationship
+inside every component still carries its full `derived_from` lineage.
+
 **Limitations:** no entity resolution or fuzzy matching is performed —
 two different entity ids are always treated as different entities, even
 if they plausibly refer to the same real-world thing (consistent with
 `entities create`'s own v1.0 scope). There is no "all paths" or induced-
-subgraph command; only bounded neighborhoods and one shortest path.
-Graph analysis is not integrated into `report` — it stays a dedicated
-CLI output so an ordinary report never pays for a traversal it didn't
-ask for.
+subgraph command; only bounded neighborhoods, one shortest path, and
+weakly-connected components. A component is a structural grouping only —
+membership is never a claim that everything inside it shares a cause, an
+actor, or a conclusion. Graph analysis is not integrated into `report` —
+it stays a dedicated CLI output so an ordinary report never pays for a
+traversal or partition it didn't ask for.
 
 ## Known limitations
 
@@ -301,7 +354,7 @@ ruff check .
 mypy src
 ```
 
-582 tests (unit + integration) exercise the full pipeline, including
+610 tests (unit + integration) exercise the full pipeline, including
 property-based tests (`hypothesis`) for serialization and provenance
 determinism. `ruff` and `mypy --strict` are both clean on `src/`.
 

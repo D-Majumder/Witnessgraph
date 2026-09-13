@@ -32,10 +32,11 @@ the whole point (DESIGN.md principle 4).
 4. `witnessgraph relationships create` (×2) — directed, evidence-backed
    edges: the user `authenticated_as` the host, and the host
    `connected_to` the ip (v1.1).
-5. `witnessgraph graph neighbors` / `graph path` — the host's direct
-   neighbors, and the deterministic two-hop chain from the user entity
-   through the host to the ip, with full relationship/evidence
-   provenance for each step.
+5. `witnessgraph graph neighbors` / `graph path` / `graph components` —
+   the host's direct neighbors, the deterministic two-hop chain from the
+   user entity through the host to the ip (with full relationship/
+   evidence provenance for each step), and confirmation that all three
+   entities fall into one connected cluster.
 6. `witnessgraph timeline` — events ordered by their earliest known time.
 7. `witnessgraph contradictions` — structural TimeAssertion conflict check.
 8. `witnessgraph hypothesis propose` / `support` — an evidence-backed claim.
