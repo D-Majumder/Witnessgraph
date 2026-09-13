@@ -28,13 +28,16 @@ from witnessgraph.correlate.graph import (
     DEFAULT_PATH_MAX_DEPTH,
     MAX_ALLOWED_DEPTH,
     GraphDirection,
+    ResolvedEntity,
     TraversalStep,
     components_result_to_json,
+    explain_relationship,
     find_components,
     find_neighbors,
     find_path,
     neighbors_result_to_json,
     path_result_to_json,
+    resolve_entity,
 )
 from witnessgraph.correlate.tracking import is_still_reproduced, track_findings
 from witnessgraph.ingest.base import SourceDescriptor
@@ -44,6 +47,7 @@ from witnessgraph.portable import export_case, import_case
 from witnessgraph.replay.replay import ReplayResult, replay_and_verify
 from witnessgraph.report.render import render_report_bytes
 from witnessgraph.report.render_json import render_report_json_bytes
+from witnessgraph.store.base import Store
 from witnessgraph.store.case import Case
 
 app = typer.Typer(
@@ -911,6 +915,53 @@ def _validate_graph_format(output_format: str) -> None:
         )
 
 
+_EXPLAIN_HELP = (
+    "Additionally resolve every relationship's derived_from ids and every "
+    "participating entity id to their stored records (evidence source/"
+    "locator, entity type/identifiers) -- a structural provenance "
+    "expansion of what is already in this result, never a new traversal "
+    "and never a forensic conclusion. Must be run while the case is open, "
+    "so it has no effect on --max-depth/--min-size bounds."
+)
+
+
+def _format_evidence_lineage_text(store: Store, rel: Relationship, indent: str) -> list[str]:
+    lines = [f"{indent}evidence:"]
+    for ref in explain_relationship(store, rel):
+        if ref.kind == "evidence_item" and ref.evidence_item is not None:
+            item = ref.evidence_item
+            lines.append(
+                f"{indent}  - evidence_item `{item.id}`: source_adapter={item.source_adapter}, "
+                f"source_locator={item.source_locator}, "
+                f"collected_at={item.collected_at.isoformat()}"
+            )
+        elif ref.kind == "normalized_event" and ref.normalized_event is not None:
+            event = ref.normalized_event
+            lines.append(
+                f"{indent}  - normalized_event `{event.id}`: event_type={event.event_type}"
+            )
+        else:
+            lines.append(f"{indent}  - `{ref.id}`: not found in this case")
+    return lines
+
+
+def _format_resolved_entity_text(resolved: ResolvedEntity) -> str:
+    if resolved.entity is None:
+        return f"  - `{resolved.entity_id}`: not found in this case"
+    identifiers = ", ".join(f"{k}={v}" for k, v in sorted(resolved.entity.identifiers.items()))
+    return (
+        f"  - `{resolved.entity_id}` ({resolved.entity.entity_type}): "
+        f"{identifiers or '(no identifiers)'}"
+    )
+
+
+def _format_entities_text(store: Store, entity_ids: set[str]) -> list[str]:
+    lines = ["entities:"]
+    for entity_id in sorted(entity_ids):
+        lines.append(_format_resolved_entity_text(resolve_entity(store, entity_id)))
+    return lines
+
+
 @graph_app.command("neighbors")
 def graph_neighbors(
     case_dir: Path = typer.Argument(..., help="Case directory to inspect."),
@@ -933,6 +984,7 @@ def graph_neighbors(
             "edge as if it pointed the other way."
         ),
     ),
+    explain: bool = typer.Option(False, "--explain", help=_EXPLAIN_HELP),
     output_format: str = typer.Option(
         "text", "--format", help="Output format: 'text' (default) or 'json'."
     ),
@@ -955,25 +1007,37 @@ def graph_neighbors(
         typer.echo(f"no such entity: {entity_id}", err=True)
         raise typer.Exit(1)
     result = find_neighbors(case.store, entity_id, max_depth=max_depth, direction=direction)
-    case.close()
 
     if output_format == "json":
-        sys.stdout.buffer.write(canonical_json_bytes(neighbors_result_to_json(result)))
+        doc = neighbors_result_to_json(result, store=case.store if explain else None)
+        case.close()
+        sys.stdout.buffer.write(canonical_json_bytes(doc))
         sys.stdout.buffer.flush()
         return
 
     if not result.reached:
+        case.close()
         typer.echo(
             f"no entities reached from {entity_id} within {max_depth} hop(s) "
             f"(direction={direction.value})"
         )
         return
-    typer.echo(
+    lines = [
         f"neighbors of {entity_id} (direction={direction.value}, max-depth={max_depth}): "
         f"{len(result.reached)} entity(ies) reached"
-    )
+    ]
     for reached in result.reached:
-        typer.echo(f"- hop {reached.hop_count}: {_format_step_text(reached.via)}")
+        lines.append(f"- hop {reached.hop_count}: {_format_step_text(reached.via)}")
+        if explain:
+            lines.extend(
+                _format_evidence_lineage_text(case.store, reached.via.relationship, "   ")
+            )
+    if explain:
+        entity_ids = {entity_id} | {r.entity_id for r in result.reached}
+        lines.extend(_format_entities_text(case.store, entity_ids))
+    case.close()
+    for line in lines:
+        typer.echo(line)
 
 
 @graph_app.command("path")
@@ -995,6 +1059,7 @@ def graph_path(
             "'both' (either way -- an explicit, undirected search)."
         ),
     ),
+    explain: bool = typer.Option(False, "--explain", help=_EXPLAIN_HELP),
     output_format: str = typer.Option(
         "text", "--format", help="Output format: 'text' (default) or 'json'."
     ),
@@ -1028,25 +1093,39 @@ def graph_path(
     result = find_path(
         case.store, source_entity_id, target_entity_id, max_depth=max_depth, direction=direction
     )
-    case.close()
 
     if output_format == "json":
-        sys.stdout.buffer.write(canonical_json_bytes(path_result_to_json(result)))
+        doc = path_result_to_json(result, store=case.store if explain else None)
+        case.close()
+        sys.stdout.buffer.write(canonical_json_bytes(doc))
         sys.stdout.buffer.flush()
         return
 
     if not result.found:
+        case.close()
         typer.echo(
             f"no path found from {source_entity_id} to {target_entity_id} "
             f"within {max_depth} hop(s) (direction={direction.value})"
         )
         return
     if source_entity_id == target_entity_id:
+        case.close()
         typer.echo(f"{source_entity_id} is the search target itself: 0 hop(s)")
         return
-    typer.echo(f"path found: {result.hop_count} hop(s)")
+    lines = [f"path found: {result.hop_count} hop(s)"]
     for i, step in enumerate(result.steps, start=1):
-        typer.echo(f"step {i}: {_format_step_text(step)}")
+        lines.append(f"step {i}: {_format_step_text(step)}")
+        if explain:
+            lines.extend(_format_evidence_lineage_text(case.store, step.relationship, "   "))
+    if explain:
+        entity_ids = {source_entity_id, target_entity_id}
+        for step in result.steps:
+            entity_ids.add(step.from_entity_id)
+            entity_ids.add(step.to_entity_id)
+        lines.extend(_format_entities_text(case.store, entity_ids))
+    case.close()
+    for line in lines:
+        typer.echo(line)
 
 
 def _format_relationship_text(rel: Relationship) -> str:
@@ -1073,6 +1152,7 @@ def graph_components(
             "components in a large, heavily-clustered case."
         ),
     ),
+    explain: bool = typer.Option(False, "--explain", help=_EXPLAIN_HELP),
     output_format: str = typer.Option(
         "text", "--format", help="Output format: 'text' (default) or 'json'."
     ),
@@ -1095,39 +1175,53 @@ def graph_components(
         raise typer.BadParameter("must be at least 1", param_hint="--min-size")
     case = _open_case_or_fail(case_dir)
     result = find_components(case.store, min_size=min_size)
-    case.close()
 
     if output_format == "json":
-        sys.stdout.buffer.write(canonical_json_bytes(components_result_to_json(result)))
+        doc = components_result_to_json(result, store=case.store if explain else None)
+        case.close()
+        sys.stdout.buffer.write(canonical_json_bytes(doc))
         sys.stdout.buffer.flush()
         return
 
     if result.total_entities_in_graph == 0:
+        case.close()
         typer.echo("no relationships in this case -- nothing to partition into components")
         return
     if not result.components:
+        case.close()
         typer.echo(
             f"no components with at least {min_size} entity(ies) -- "
             f"{result.total_components_found} component(s) exist in this "
             f"case, none meet that threshold"
         )
         return
-    typer.echo(
+    lines = [
         f"{len(result.components)} component(s) covering "
         f"{sum(len(c.entity_ids) for c in result.components)} of "
         f"{result.total_entities_in_graph} entities in the relationship "
         f"graph ({result.total_relationships} relationship(s) total; "
         f"min-size={min_size})"
-    )
+    ]
     for component in result.components:
-        typer.echo(
+        lines.append(
             f"- component {component.index}: {len(component.entity_ids)} entities, "
             f"{len(component.relationships)} relationship(s)"
         )
         entities = ", ".join(f"`{eid}`" for eid in component.entity_ids)
-        typer.echo(f"  entities: {entities}")
+        lines.append(f"  entities: {entities}")
         for rel in component.relationships:
-            typer.echo(f"  - {_format_relationship_text(rel)}")
+            lines.append(f"  - {_format_relationship_text(rel)}")
+            if explain:
+                lines.extend(_format_evidence_lineage_text(case.store, rel, "     "))
+        if explain:
+            component_entity_ids = set(component.entity_ids)
+            lines.extend(
+                f"  {entity_line}"
+                for entity_line in _format_entities_text(case.store, component_entity_ids)
+            )
+    case.close()
+    for line in lines:
+        typer.echo(line)
 
 
 def _format_tracked_finding_summary(finding: TrackedGapFinding, still_reproduced: bool) -> str:

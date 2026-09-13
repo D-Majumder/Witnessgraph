@@ -90,6 +90,40 @@ independent clusters". Load-bearing design decisions specific to it:
   about *presentation*: components are ordered by their smallest member
   entity id, and entities/relationships within a component are each
   sorted by id -- never by discovery order or incidental storage order.
+
+Explainability (``resolve_evidence_ref``/``resolve_entity``/``explain_relationship``):
+every result above already carries a relationship's own id, type,
+source/target, and ``derived_from`` id list -- that was already true the
+day ``find_neighbors``/``find_path`` shipped. What was still missing was
+turning a bare ``derived_from`` id into something a person (or a future
+UI) can read without a second, manual lookup: no CLI command anywhere in
+this project can show a single EvidenceItem or NormalizedEvent by id.
+``resolve_evidence_ref`` closes exactly that gap and nothing more:
+
+- **Pure lookup, never fabrication.** Resolving an id means calling the
+  same ``Store.get_evidence``/``get_normalized_event`` every other
+  referential-existence check in this codebase already uses (see
+  ``cli.main._resolve_evidence_ref``, ``relationships_create``'s own
+  validation). Nothing is invented, summarized, or guessed; a
+  ``derived_from`` id that names neither is reported as ``"not_found"``
+  (a real, if unlikely, possibility -- ``core/`` does not enforce
+  referential integrity at construction time, exactly as
+  ``Hypothesis.EvidenceRef``'s own docstring already documents), never
+  silently dropped or treated as an error.
+- **Bounded by the result it explains, not a new traversal.** Explaining
+  a path/neighborhood/component resolves only the ids already present in
+  that (already depth- or min-size-bounded) result -- one O(1) primary-
+  key lookup per id. No new graph walking, no new depth parameter.
+- **Opt-in, additive, and never changes existing output.** Every CLI
+  command in this module renders exactly as before unless a caller
+  explicitly asks for explanation (``--explain``); the JSON shape gains
+  extra keys only when asked, so an existing consumer parsing today's
+  output is unaffected.
+- **Structural fact and provenance fact only, never a forensic
+  conclusion.** An explanation says "this relationship is grounded in
+  EvidenceItem E, collected via adapter jsonl from source.jsonl:3" -- it
+  never says who did something or why, and it never claims two entities
+  belong to the same incident merely because a path connects them.
 """
 
 from __future__ import annotations
@@ -97,6 +131,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from witnessgraph.core.entities import Entity
+from witnessgraph.core.events import NormalizedEvent
+from witnessgraph.core.evidence import EvidenceItem
 from witnessgraph.core.relationships import Relationship
 from witnessgraph.store.base import Store
 
@@ -209,6 +246,63 @@ class ComponentsResult:
     #: Sorted by component.index; only components with
     #: len(entity_ids) >= min_size are included.
     components: tuple[GraphComponent, ...]
+
+
+@dataclass(frozen=True)
+class ResolvedEvidenceRef:
+    """One ``Relationship.derived_from`` id, resolved to its stored record.
+
+    ``kind`` is ``"evidence_item"``, ``"normalized_event"``, or
+    ``"not_found"`` -- a dangling id (``core/`` does not enforce
+    referential integrity at construction time; see this module's
+    docstring) is reported, not silently dropped or raised as an error.
+    Exactly one of ``evidence_item``/``normalized_event`` is set when
+    found; both are ``None`` for ``"not_found"``.
+    """
+
+    id: str
+    kind: str
+    evidence_item: EvidenceItem | None = None
+    normalized_event: NormalizedEvent | None = None
+
+
+@dataclass(frozen=True)
+class ResolvedEntity:
+    """One entity id, resolved to its stored ``Entity`` record (``None``
+    if the id does not name a known entity -- reported, not raised)."""
+
+    entity_id: str
+    entity: Entity | None
+
+
+def resolve_evidence_ref(store: Store, ref_id: str) -> ResolvedEvidenceRef:
+    """Resolve one id to its EvidenceItem or NormalizedEvent record.
+
+    Mirrors ``cli.main._resolve_evidence_ref``'s exact lookup order
+    (evidence first, then normalized event) -- the same resolution
+    strategy already used for Hypothesis's EvidenceRef, applied here to
+    a Relationship's derived_from instead.
+    """
+    evidence = store.get_evidence(ref_id)
+    if evidence is not None:
+        return ResolvedEvidenceRef(id=ref_id, kind="evidence_item", evidence_item=evidence)
+    event = store.get_normalized_event(ref_id)
+    if event is not None:
+        return ResolvedEvidenceRef(id=ref_id, kind="normalized_event", normalized_event=event)
+    return ResolvedEvidenceRef(id=ref_id, kind="not_found")
+
+
+def resolve_entity(store: Store, entity_id: str) -> ResolvedEntity:
+    return ResolvedEntity(entity_id=entity_id, entity=store.get_entity(entity_id))
+
+
+def explain_relationship(
+    store: Store, relationship: Relationship
+) -> tuple[ResolvedEvidenceRef, ...]:
+    """Resolve every id in ``relationship.derived_from``, in its recorded
+    order (never re-sorted -- that order is itself part of the
+    relationship's identity, not incidental), to its stored record."""
+    return tuple(resolve_evidence_ref(store, ref_id) for ref_id in relationship.derived_from)
 
 
 def _build_adjacency(
@@ -454,8 +548,58 @@ def find_components(store: Store, *, min_size: int = 1) -> ComponentsResult:
     )
 
 
-def _relationship_to_json(rel: Relationship) -> dict[str, object]:
+def _evidence_item_to_json(item: EvidenceItem) -> dict[str, object]:
     return {
+        "id": item.id,
+        "source_adapter": item.source_adapter,
+        "adapter_version": item.adapter_version,
+        "source_locator": item.source_locator,
+        "raw_size_bytes": item.raw_size_bytes,
+        "collected_at": item.collected_at,
+        "observed_at": item.observed_at,
+    }
+
+
+def _normalized_event_to_json(event: NormalizedEvent) -> dict[str, object]:
+    return {
+        "id": event.id,
+        "event_type": event.event_type,
+        "attributes": dict(event.attributes),
+        "derived_from": list(event.derived_from),
+    }
+
+
+def _resolved_evidence_ref_to_json(ref: ResolvedEvidenceRef) -> dict[str, object]:
+    return {
+        "id": ref.id,
+        "kind": ref.kind,
+        "evidence_item": (
+            _evidence_item_to_json(ref.evidence_item) if ref.evidence_item is not None else None
+        ),
+        "normalized_event": (
+            _normalized_event_to_json(ref.normalized_event)
+            if ref.normalized_event is not None
+            else None
+        ),
+    }
+
+
+def _resolved_entity_to_json(resolved: ResolvedEntity) -> dict[str, object]:
+    entity = resolved.entity
+    return {
+        "entity_id": resolved.entity_id,
+        "found": entity is not None,
+        "entity_type": entity.entity_type if entity is not None else None,
+        "identifiers": dict(entity.identifiers) if entity is not None else None,
+    }
+
+
+def _relationship_to_json(rel: Relationship, *, store: Store | None = None) -> dict[str, object]:
+    """``store`` is optional and additive only: when given (``--explain``),
+    an extra ``evidence_lineage`` key resolves every ``derived_from`` id to
+    its stored record (see :func:`explain_relationship`); omitting it
+    reproduces the exact JSON shape from before this capability existed."""
+    doc: dict[str, object] = {
         "id": rel.id,
         "relationship_type": rel.relationship_type,
         "source_entity_id": rel.source_entity_id,
@@ -463,22 +607,41 @@ def _relationship_to_json(rel: Relationship) -> dict[str, object]:
         "attributes": dict(rel.attributes),
         "derived_from": list(rel.derived_from),
     }
+    if store is not None:
+        doc["evidence_lineage"] = [
+            _resolved_evidence_ref_to_json(ref) for ref in explain_relationship(store, rel)
+        ]
+    return doc
 
 
-def _step_to_json(step: TraversalStep) -> dict[str, object]:
+def _step_to_json(step: TraversalStep, *, store: Store | None = None) -> dict[str, object]:
     return {
         "from_entity_id": step.from_entity_id,
         "to_entity_id": step.to_entity_id,
         "walked_direction": step.walked_direction,
-        "relationship": _relationship_to_json(step.relationship),
+        "relationship": _relationship_to_json(step.relationship, store=store),
     }
 
 
-def neighbors_result_to_json(result: NeighborsResult) -> dict[str, object]:
+def _entities_json(store: Store, entity_ids: set[str]) -> dict[str, object]:
+    """A ``{entity_id: resolved_entity}`` map, keys sorted, for every id in
+    ``entity_ids`` -- the same additive, ``--explain``-only augmentation
+    ``_relationship_to_json`` applies to relationships, applied to the
+    entities participating in a result."""
+    return {
+        entity_id: _resolved_entity_to_json(resolve_entity(store, entity_id))
+        for entity_id in sorted(entity_ids)
+    }
+
+
+def neighbors_result_to_json(
+    result: NeighborsResult, *, store: Store | None = None
+) -> dict[str, object]:
     """A plain dict/list tree for ``result`` -- pass to
     ``core.ids.canonical_json_bytes`` for deterministic encoding, exactly
-    like ``report.render_json``'s builders."""
-    return {
+    like ``report.render_json``'s builders. ``store`` is optional and
+    additive only -- see :func:`_relationship_to_json`."""
+    doc: dict[str, object] = {
         "origin_entity_id": result.origin_entity_id,
         "direction": result.direction.value,
         "max_depth": result.max_depth,
@@ -486,27 +649,40 @@ def neighbors_result_to_json(result: NeighborsResult) -> dict[str, object]:
             {
                 "entity_id": r.entity_id,
                 "hop_count": r.hop_count,
-                "via": _step_to_json(r.via),
+                "via": _step_to_json(r.via, store=store),
             }
             for r in result.reached
         ],
     }
+    if store is not None:
+        entity_ids = {result.origin_entity_id} | {r.entity_id for r in result.reached}
+        doc["entities"] = _entities_json(store, entity_ids)
+    return doc
 
 
-def path_result_to_json(result: PathResult) -> dict[str, object]:
-    return {
+def path_result_to_json(result: PathResult, *, store: Store | None = None) -> dict[str, object]:
+    doc: dict[str, object] = {
         "source_entity_id": result.source_entity_id,
         "target_entity_id": result.target_entity_id,
         "direction": result.direction.value,
         "max_depth": result.max_depth,
         "found": result.found,
         "hop_count": result.hop_count,
-        "steps": [_step_to_json(step) for step in result.steps],
+        "steps": [_step_to_json(step, store=store) for step in result.steps],
     }
+    if store is not None:
+        entity_ids = {result.source_entity_id, result.target_entity_id}
+        for step in result.steps:
+            entity_ids.add(step.from_entity_id)
+            entity_ids.add(step.to_entity_id)
+        doc["entities"] = _entities_json(store, entity_ids)
+    return doc
 
 
-def components_result_to_json(result: ComponentsResult) -> dict[str, object]:
-    return {
+def components_result_to_json(
+    result: ComponentsResult, *, store: Store | None = None
+) -> dict[str, object]:
+    doc: dict[str, object] = {
         "min_size": result.min_size,
         "total_entities_in_graph": result.total_entities_in_graph,
         "total_relationships": result.total_relationships,
@@ -515,8 +691,14 @@ def components_result_to_json(result: ComponentsResult) -> dict[str, object]:
             {
                 "index": component.index,
                 "entity_ids": list(component.entity_ids),
-                "relationships": [_relationship_to_json(rel) for rel in component.relationships],
+                "relationships": [
+                    _relationship_to_json(rel, store=store) for rel in component.relationships
+                ],
             }
             for component in result.components
         ],
     }
+    if store is not None:
+        entity_ids = {eid for component in result.components for eid in component.entity_ids}
+        doc["entities"] = _entities_json(store, entity_ids)
+    return doc
