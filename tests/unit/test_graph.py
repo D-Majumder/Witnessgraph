@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from witnessgraph.core.entities import Entity
+from witnessgraph.core.events import NormalizedEvent
 from witnessgraph.core.evidence import EvidenceItem
 from witnessgraph.core.relationships import Relationship
 from witnessgraph.correlate.graph import (
@@ -22,9 +23,15 @@ from witnessgraph.correlate.graph import (
     DEFAULT_PATH_MAX_DEPTH,
     MAX_ALLOWED_DEPTH,
     GraphDirection,
+    components_result_to_json,
+    explain_relationship,
     find_components,
     find_neighbors,
     find_path,
+    neighbors_result_to_json,
+    path_result_to_json,
+    resolve_entity,
+    resolve_evidence_ref,
 )
 from witnessgraph.store.case import Case
 
@@ -75,6 +82,30 @@ class _Graph:
         )
         self.case.store.put_relationship(rel)
         return rel.id
+
+    def edge_with_derived_from(
+        self, source: str, target: str, derived_from: tuple[str, ...]
+    ) -> Relationship:
+        rel = Relationship.create(
+            relationship_type="connected_to",
+            source_entity_id=self.entity(source),
+            target_entity_id=self.entity(target),
+            derived_from=derived_from,
+            created_at=NOW,
+        )
+        self.case.store.put_relationship(rel)
+        return rel
+
+    def normalized_event(self, event_type: str = "test_event") -> str:
+        evt = NormalizedEvent.create(
+            event_type=event_type, derived_from=(self._evidence.id,), created_at=NOW
+        )
+        self.case.store.put_normalized_event(evt)
+        return evt.id
+
+    @property
+    def evidence_id(self) -> str:
+        return self._evidence.id
 
     def close(self) -> None:
         self.case.close()
@@ -554,3 +585,157 @@ def test_components_result_independent_of_relationship_insertion_order(
     layout_a = _build([("A", "B"), ("B", "C"), ("X", "Y")])
     layout_b = _build([("X", "Y"), ("B", "C"), ("A", "B")])
     assert layout_a == layout_b
+
+
+# -- explainability: resolve_evidence_ref / resolve_entity / explain_relationship --------
+
+
+def test_resolve_evidence_ref_finds_evidence_item(graph: _Graph) -> None:
+    ref = resolve_evidence_ref(graph.case.store, graph.evidence_id)
+    assert ref.kind == "evidence_item"
+    assert ref.evidence_item is not None
+    assert ref.evidence_item.id == graph.evidence_id
+    assert ref.normalized_event is None
+
+
+def test_resolve_evidence_ref_finds_normalized_event(graph: _Graph) -> None:
+    event_id = graph.normalized_event(event_type="logon")
+    ref = resolve_evidence_ref(graph.case.store, event_id)
+    assert ref.kind == "normalized_event"
+    assert ref.normalized_event is not None
+    assert ref.normalized_event.event_type == "logon"
+    assert ref.evidence_item is None
+
+
+def test_resolve_evidence_ref_reports_not_found_without_crashing(graph: _Graph) -> None:
+    ref = resolve_evidence_ref(graph.case.store, "no-such-id")
+    assert ref.kind == "not_found"
+    assert ref.evidence_item is None
+    assert ref.normalized_event is None
+
+
+def test_resolve_entity_found_and_not_found(graph: _Graph) -> None:
+    graph.entity("A")
+    found = resolve_entity(graph.case.store, graph.entity("A"))
+    assert found.entity is not None
+    assert found.entity.entity_type == "node"
+
+    missing = resolve_entity(graph.case.store, "no-such-entity")
+    assert missing.entity is None
+
+
+def test_explain_relationship_preserves_derived_from_order(graph: _Graph) -> None:
+    event_id = graph.normalized_event()
+    rel = graph.edge_with_derived_from("A", "B", (event_id, graph.evidence_id))
+    refs = explain_relationship(graph.case.store, rel)
+    assert [r.id for r in refs] == [event_id, graph.evidence_id]
+    assert refs[0].kind == "normalized_event"
+    assert refs[1].kind == "evidence_item"
+
+
+def test_explain_relationship_handles_dangling_derived_from_id(graph: _Graph) -> None:
+    """derived_from ids are not referentially enforced at construction
+    (see Relationship's module docstring); explaining a dangling one must
+    report it as not_found, never raise."""
+    rel = graph.edge_with_derived_from("A", "B", ("dangling-id",))
+    refs = explain_relationship(graph.case.store, rel)
+    assert len(refs) == 1
+    assert refs[0].kind == "not_found"
+    assert refs[0].id == "dangling-id"
+
+
+def test_explain_relationship_multiple_evidence_ids(graph: _Graph) -> None:
+    second_evidence = EvidenceItem.create(
+        raw_bytes=b"second", source_adapter="test", adapter_version="0.0.0",
+        source_locator="test:2", collected_at=NOW,
+    )
+    graph.case.store.put_evidence(second_evidence)
+    rel = graph.edge_with_derived_from("A", "B", (graph.evidence_id, second_evidence.id))
+    refs = explain_relationship(graph.case.store, rel)
+    assert len(refs) == 2
+    assert {r.id for r in refs} == {graph.evidence_id, second_evidence.id}
+
+
+# -- explainability: JSON augmentation is additive and opt-in ----------------------------
+
+
+def test_path_json_without_store_omits_evidence_lineage_and_entities(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    result = find_path(graph.case.store, graph.entity("A"), graph.entity("B"))
+    doc = path_result_to_json(result)
+    assert "entities" not in doc
+    assert "evidence_lineage" not in doc["steps"][0]["relationship"]
+
+
+def test_path_json_with_store_adds_evidence_lineage_and_entities(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    result = find_path(graph.case.store, graph.entity("A"), graph.entity("B"))
+    doc = path_result_to_json(result, store=graph.case.store)
+    lineage = doc["steps"][0]["relationship"]["evidence_lineage"]
+    assert lineage[0]["id"] == graph.evidence_id
+    assert lineage[0]["kind"] == "evidence_item"
+    assert lineage[0]["evidence_item"]["source_adapter"] == "test"
+    assert set(doc["entities"].keys()) == {graph.entity("A"), graph.entity("B")}
+    assert doc["entities"][graph.entity("A")]["entity_type"] == "node"
+
+
+def test_neighbors_json_with_store_resolves_all_reached_entities(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    graph.edge("A", "C")
+    result = find_neighbors(graph.case.store, graph.entity("A"))
+    doc = neighbors_result_to_json(result, store=graph.case.store)
+    assert set(doc["entities"].keys()) == {graph.entity("A"), graph.entity("B"), graph.entity("C")}
+
+
+def test_components_json_with_store_resolves_member_entities(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    result = find_components(graph.case.store)
+    doc = components_result_to_json(result, store=graph.case.store)
+    assert set(doc["entities"].keys()) == {graph.entity("A"), graph.entity("B")}
+    for component in doc["components"]:
+        for rel in component["relationships"]:
+            assert "evidence_lineage" in rel
+
+
+def test_json_with_store_reports_not_found_entity_without_crashing(tmp_path: Path) -> None:
+    """A dangling relationship endpoint (constructed directly, bypassing
+    the CLI's referential-existence check) must not crash JSON rendering."""
+    case = Case.create(tmp_path / "case")
+    evidence = EvidenceItem.create(
+        raw_bytes=b"x", source_adapter="t", adapter_version="0", source_locator="x",
+        collected_at=NOW,
+    )
+    case.store.put_evidence(evidence)
+    rel = Relationship.create(
+        relationship_type="connected_to",
+        source_entity_id="ghost-a",
+        target_entity_id="ghost-b",
+        derived_from=(evidence.id,),
+        created_at=NOW,
+    )
+    case.store.put_relationship(rel)
+    result = find_components(case.store)
+    doc = components_result_to_json(result, store=case.store)
+    assert doc["entities"]["ghost-a"]["found"] is False
+    assert doc["entities"]["ghost-b"]["found"] is False
+    case.close()
+
+
+def test_explain_json_is_deterministic_across_repeated_calls(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    graph.edge("B", "C")
+    result = find_path(graph.case.store, graph.entity("A"), graph.entity("C"))
+    doc1 = path_result_to_json(result, store=graph.case.store)
+    doc2 = path_result_to_json(result, store=graph.case.store)
+    assert doc1 == doc2
+
+
+def test_explain_evidence_lineage_order_matches_derived_from(graph: _Graph) -> None:
+    event_id = graph.normalized_event()
+    graph.edge_with_derived_from("A", "B", (graph.evidence_id, event_id))
+    result = find_path(graph.case.store, graph.entity("A"), graph.entity("B"))
+    doc = path_result_to_json(result, store=graph.case.store)
+    lineage = doc["steps"][0]["relationship"]["evidence_lineage"]
+    assert [entry["id"] for entry in lineage] == [graph.evidence_id, event_id]
+    assert lineage[0]["kind"] == "evidence_item"
+    assert lineage[1]["kind"] == "normalized_event"

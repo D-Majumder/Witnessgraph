@@ -491,3 +491,166 @@ def test_components_missing_case_fails_cleanly(tmp_path: Path) -> None:
     assert result.exit_code != 0
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert "does not look like a Witnessgraph case" in _flatten(result.stderr)
+
+
+# -- --explain: provenance/lineage expansion -----------------------------------
+
+
+def test_explain_is_opt_in_default_output_unchanged(tmp_path: Path) -> None:
+    """The single most important regression: omitting --explain must
+    reproduce byte-identical output to before this capability existed."""
+    case_dir = _make_chain_case(tmp_path)
+    plain = runner.invoke(app, ["graph", "path", str(case_dir), "entity-A", "entity-B"])
+    with_flag_absent = runner.invoke(app, ["graph", "path", str(case_dir), "entity-A", "entity-B"])
+    assert plain.stdout == with_flag_absent.stdout
+    assert "evidence" not in plain.stdout.lower()
+
+    plain_json = runner.invoke(
+        app, ["graph", "path", str(case_dir), "entity-A", "entity-B", "--format", "json"]
+    )
+    doc = json.loads(plain_json.stdout)
+    assert "entities" not in doc
+    assert "evidence_lineage" not in doc["steps"][0]["relationship"]
+
+
+def test_path_explain_text_shows_evidence_and_entities(tmp_path: Path) -> None:
+    case_dir = _make_chain_case(tmp_path)
+    result = runner.invoke(
+        app, ["graph", "path", str(case_dir), "entity-A", "entity-C", "--explain"]
+    )
+    assert result.exit_code == 0
+    assert "evidence:" in result.stdout
+    assert "evidence_item" in result.stdout
+    assert "entities:" in result.stdout
+    assert "entity-A" in result.stdout
+    assert "entity-B" in result.stdout
+    assert "entity-C" in result.stdout
+
+
+def test_path_explain_json_has_full_lineage(tmp_path: Path) -> None:
+    case_dir = _make_chain_case(tmp_path)
+    result = runner.invoke(
+        app,
+        ["graph", "path", str(case_dir), "entity-A", "entity-C", "--explain", "--format", "json"],
+    )
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert set(doc["entities"].keys()) == {"entity-A", "entity-B", "entity-C"}
+    assert doc["entities"]["entity-A"]["found"] is True
+    for step in doc["steps"]:
+        lineage = step["relationship"]["evidence_lineage"]
+        assert len(lineage) == 1
+        assert lineage[0]["kind"] == "evidence_item"
+        assert lineage[0]["evidence_item"]["source_adapter"] == "test"
+        # Relationship identity fields are untouched by --explain.
+        assert "source_entity_id" in step["relationship"]
+        assert "target_entity_id" in step["relationship"]
+
+
+def test_path_explain_no_path_still_clean_no_lineage_needed(tmp_path: Path) -> None:
+    case_dir = _make_chain_case(tmp_path)
+    result = runner.invoke(
+        app,
+        ["graph", "path", str(case_dir), "entity-A", "entity-D", "--explain", "--format", "json"],
+    )
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert doc["found"] is False
+    assert doc["steps"] == []
+
+
+def test_neighbors_explain_resolves_reached_and_origin_entities(tmp_path: Path) -> None:
+    case_dir = _make_chain_case(tmp_path)
+    result = runner.invoke(
+        app,
+        ["graph", "neighbors", str(case_dir), "entity-A", "--max-depth", "2", "--explain",
+         "--format", "json"],
+    )
+    doc = json.loads(result.stdout)
+    assert set(doc["entities"].keys()) == {"entity-A", "entity-B", "entity-C"}
+    for reached in doc["reached"]:
+        assert reached["via"]["relationship"]["evidence_lineage"]
+
+
+def test_components_explain_resolves_member_entities_and_relationships(
+    tmp_path: Path,
+) -> None:
+    case_dir = _make_two_cluster_case(tmp_path)
+    result = runner.invoke(
+        app, ["graph", "components", str(case_dir), "--explain", "--format", "json"]
+    )
+    doc = json.loads(result.stdout)
+    assert "entity-Z" not in doc["entities"]  # isolated entity still excluded
+    for component in doc["components"]:
+        for rel in component["relationships"]:
+            assert rel["evidence_lineage"]
+
+
+def test_components_explain_text_includes_evidence_and_entities(tmp_path: Path) -> None:
+    case_dir = _make_two_cluster_case(tmp_path)
+    result = runner.invoke(app, ["graph", "components", str(case_dir), "--explain"])
+    assert result.exit_code == 0
+    assert "evidence:" in result.stdout
+    assert "entities:" in result.stdout
+
+
+def test_explain_json_deterministic_across_repeated_calls(tmp_path: Path) -> None:
+    case_dir = _make_two_cluster_case(tmp_path)
+    args = ["graph", "components", str(case_dir), "--explain", "--format", "json"]
+    first = runner.invoke(app, args)
+    second = runner.invoke(app, args)
+    assert first.exit_code == 0
+    assert first.stdout == second.stdout
+
+
+def test_explain_on_case_with_no_relationships_is_clean(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    case = Case.create(case_dir)
+    case.record_manifest()
+    case.close()
+    result = runner.invoke(app, ["graph", "components", str(case_dir), "--explain"])
+    assert result.exit_code == 0
+    assert "nothing to partition" in result.stdout
+
+
+def test_explain_does_not_affect_missing_entity_error_handling(tmp_path: Path) -> None:
+    case_dir = _make_chain_case(tmp_path)
+    result = runner.invoke(
+        app, ["graph", "path", str(case_dir), "no-such-entity", "entity-B", "--explain"]
+    )
+    assert result.exit_code != 0
+    assert "no such entity" in _flatten(result.stderr)
+
+
+def test_explain_with_dangling_entity_reports_not_found_not_a_crash(tmp_path: Path) -> None:
+    """A relationship whose endpoint entity was never created (bypassing
+    the CLI's own referential check, e.g. from a hand-edited case) must
+    not crash --explain -- it reports found: false for that id."""
+    case_dir = tmp_path / "case"
+    case = Case.create(case_dir)
+    evidence = EvidenceItem.create(
+        raw_bytes=b"x",
+        source_adapter="t",
+        adapter_version="0",
+        source_locator="x",
+        collected_at=NOW,
+    )
+    case.store.put_evidence(evidence)
+    rel = Relationship.create(
+        relationship_type="connected_to",
+        source_entity_id="ghost-a",
+        target_entity_id="ghost-b",
+        derived_from=(evidence.id,),
+        created_at=NOW,
+    )
+    case.store.put_relationship(rel)
+    case.record_manifest()
+    case.close()
+
+    result = runner.invoke(
+        app, ["graph", "components", str(case_dir), "--explain", "--format", "json"]
+    )
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert doc["entities"]["ghost-a"]["found"] is False
+    assert doc["entities"]["ghost-b"]["found"] is False
