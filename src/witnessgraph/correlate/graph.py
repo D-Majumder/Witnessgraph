@@ -51,6 +51,45 @@ Design decisions, load-bearing:
   exponential in general graphs); it returns the single, deterministic,
   fewest-hop chain BFS discovers first, or reports none exists within
   ``max_depth``.
+
+A third operation, :func:`find_components`, answers a different kind of
+question than the two above: not "what is reachable from this one
+entity" but "how does the whole case's relationship graph partition into
+independent clusters". Load-bearing design decisions specific to it:
+
+- **Weakly connected, not directed.** "Are these two entities part of
+  the same cluster" is answered ignoring relationship direction --
+  standard graph theory's weakly-connected-components definition, and
+  the only sense in which "connected" is well-defined for a whole-graph
+  partition (a directed notion, strongly-connected components requiring
+  mutual reachability, is a different, harder question this module does
+  not answer). This is a deliberate, narrow exception to this module's
+  otherwise-universal "directed by default" rule for :func:`find_neighbors`/
+  :func:`find_path` -- component membership and point-to-point
+  reachability are genuinely different questions, and conflating them
+  would be the actual inconsistency.
+- **Scoped to entities that actually appear in a relationship.** An
+  entity with zero relationships is not part of any component -- it is
+  not silently reported as a size-1 component of its own. This keeps
+  output meaningful for a case with many entities but sparse
+  relationships, and mirrors :func:`find_neighbors`/:func:`find_path`
+  already treating an entity with no edges as simply having nothing to
+  report.
+- **Bounded by case size, like ``correlate.contradictions``/``correlate.gaps``.**
+  There is no ``max_depth`` here because there is no traversal depth to
+  bound -- this computes the full partition in one O(V+E) pass over
+  whatever the case actually contains, exactly as ``detect_time_contradictions``/
+  ``find_gaps`` already process their whole store unconditionally. The
+  only user-facing bound is ``min_size`` (default 1, show everything),
+  a display filter applied after computing the full partition, never a
+  correctness-affecting limit.
+- **Deterministic without needing a traversal tie-break.** Unlike a
+  shortest path, which relationship chain to report between two entities,
+  which entities end up in the *same* component is a property of the
+  graph alone, independent of traversal order. Determinism here is only
+  about *presentation*: components are ordered by their smallest member
+  entity id, and entities/relationships within a component are each
+  sorted by id -- never by discovery order or incidental storage order.
 """
 
 from __future__ import annotations
@@ -139,6 +178,37 @@ class PathResult:
     @property
     def hop_count(self) -> int | None:
         return len(self.steps) if self.found else None
+
+
+@dataclass(frozen=True)
+class GraphComponent:
+    """One weakly-connected cluster of entities and the relationships joining them.
+
+    ``index`` is this component's position (0-based) among the displayed
+    result, ordered by each component's smallest member entity id --
+    stable for a given graph and ``min_size``, but not a persistent
+    identity (adding a relationship that merges two components, or
+    changing ``min_size``, can renumber everything).
+    """
+
+    index: int
+    entity_ids: tuple[str, ...]  # sorted ascending; every member entity
+    relationships: tuple[Relationship, ...]  # sorted by id; every edge joining two members
+
+
+@dataclass(frozen=True)
+class ComponentsResult:
+    min_size: int
+    #: Every entity that appears as a source or target of at least one
+    #: relationship in the case -- the population components partition.
+    total_entities_in_graph: int
+    total_relationships: int
+    #: Component count *before* the min_size filter -- lets a caller
+    #: report "N components exist, M meet the threshold" even when M is 0.
+    total_components_found: int
+    #: Sorted by component.index; only components with
+    #: len(entity_ids) >= min_size are included.
+    components: tuple[GraphComponent, ...]
 
 
 def _build_adjacency(
@@ -311,20 +381,96 @@ def find_path(
     )
 
 
+def validate_min_size(min_size: int) -> None:
+    if min_size < 1:
+        raise ValueError(f"min_size must be at least 1 (got {min_size})")
+
+
+def find_components(store: Store, *, min_size: int = 1) -> ComponentsResult:
+    """Partition every entity that appears in at least one relationship
+    into weakly-connected clusters (see this module's docstring for why
+    "weakly connected" -- ignoring direction -- is the right notion for a
+    whole-graph partition, unlike :func:`find_neighbors`/:func:`find_path`).
+
+    ``min_size`` filters the *displayed* components to those with at
+    least that many entities (default 1: show everything, including
+    isolated pairs); it never changes which entities are computed as
+    connected to which -- only which already-computed components are
+    included in the result.
+    """
+    validate_min_size(min_size)
+    relationships = sorted(store.list_relationships(), key=lambda r: r.id)
+    undirected_adj: dict[str, list[tuple[str, Relationship]]] = {}
+    for rel in relationships:
+        undirected_adj.setdefault(rel.source_entity_id, []).append(
+            (rel.target_entity_id, rel)
+        )
+        undirected_adj.setdefault(rel.target_entity_id, []).append(
+            (rel.source_entity_id, rel)
+        )
+    for neighbors in undirected_adj.values():
+        neighbors.sort(key=lambda pair: (pair[0], pair[1].id))
+
+    all_entity_ids = sorted(undirected_adj.keys())
+    visited: set[str] = set()
+    raw_components: list[tuple[set[str], set[str]]] = []
+    for start in all_entity_ids:
+        if start in visited:
+            continue
+        component_entities = {start}
+        component_relationship_ids: set[str] = set()
+        visited.add(start)
+        frontier = [start]
+        while frontier:
+            next_frontier: list[str] = []
+            for entity_id in frontier:
+                for neighbor_id, rel in undirected_adj.get(entity_id, []):
+                    component_relationship_ids.add(rel.id)
+                    if neighbor_id not in visited:
+                        visited.add(neighbor_id)
+                        component_entities.add(neighbor_id)
+                        next_frontier.append(neighbor_id)
+            frontier = next_frontier
+        raw_components.append((component_entities, component_relationship_ids))
+
+    raw_components.sort(key=lambda c: min(c[0]))
+    rel_by_id = {rel.id: rel for rel in relationships}
+    components = tuple(
+        GraphComponent(
+            index=i,
+            entity_ids=tuple(sorted(entity_ids)),
+            relationships=tuple(rel_by_id[rid] for rid in sorted(relationship_ids)),
+        )
+        for i, (entity_ids, relationship_ids) in enumerate(
+            c for c in raw_components if len(c[0]) >= min_size
+        )
+    )
+    return ComponentsResult(
+        min_size=min_size,
+        total_entities_in_graph=len(all_entity_ids),
+        total_relationships=len(relationships),
+        total_components_found=len(raw_components),
+        components=components,
+    )
+
+
+def _relationship_to_json(rel: Relationship) -> dict[str, object]:
+    return {
+        "id": rel.id,
+        "relationship_type": rel.relationship_type,
+        "source_entity_id": rel.source_entity_id,
+        "target_entity_id": rel.target_entity_id,
+        "attributes": dict(rel.attributes),
+        "derived_from": list(rel.derived_from),
+    }
+
+
 def _step_to_json(step: TraversalStep) -> dict[str, object]:
-    rel = step.relationship
     return {
         "from_entity_id": step.from_entity_id,
         "to_entity_id": step.to_entity_id,
         "walked_direction": step.walked_direction,
-        "relationship": {
-            "id": rel.id,
-            "relationship_type": rel.relationship_type,
-            "source_entity_id": rel.source_entity_id,
-            "target_entity_id": rel.target_entity_id,
-            "attributes": dict(rel.attributes),
-            "derived_from": list(rel.derived_from),
-        },
+        "relationship": _relationship_to_json(step.relationship),
     }
 
 
@@ -356,4 +502,21 @@ def path_result_to_json(result: PathResult) -> dict[str, object]:
         "found": result.found,
         "hop_count": result.hop_count,
         "steps": [_step_to_json(step) for step in result.steps],
+    }
+
+
+def components_result_to_json(result: ComponentsResult) -> dict[str, object]:
+    return {
+        "min_size": result.min_size,
+        "total_entities_in_graph": result.total_entities_in_graph,
+        "total_relationships": result.total_relationships,
+        "total_components_found": result.total_components_found,
+        "components": [
+            {
+                "index": component.index,
+                "entity_ids": list(component.entity_ids),
+                "relationships": [_relationship_to_json(rel) for rel in component.relationships],
+            }
+            for component in result.components
+        ],
     }

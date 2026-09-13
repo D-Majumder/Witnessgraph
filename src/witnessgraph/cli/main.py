@@ -29,6 +29,8 @@ from witnessgraph.correlate.graph import (
     MAX_ALLOWED_DEPTH,
     GraphDirection,
     TraversalStep,
+    components_result_to_json,
+    find_components,
     find_neighbors,
     find_path,
     neighbors_result_to_json,
@@ -1045,6 +1047,87 @@ def graph_path(
     typer.echo(f"path found: {result.hop_count} hop(s)")
     for i, step in enumerate(result.steps, start=1):
         typer.echo(f"step {i}: {_format_step_text(step)}")
+
+
+def _format_relationship_text(rel: Relationship) -> str:
+    derived = ", ".join(f"`{d}`" for d in rel.derived_from)
+    return (
+        f"`{rel.id}`: {rel.source_entity_id} -[{rel.relationship_type}]-> "
+        f"{rel.target_entity_id} (derived_from: {derived})"
+    )
+
+
+@graph_app.command("components")
+def graph_components(
+    case_dir: Path = typer.Argument(..., help="Case directory to inspect."),
+    min_size: int = typer.Option(
+        1,
+        "--min-size",
+        help=(
+            "Only show components with at least this many entities "
+            "(default 1: show everything). Every component has at least "
+            "2 entities by construction -- an entity is only ever part of "
+            "a component because it appears in a relationship with "
+            "another entity -- so --min-size 1 and --min-size 2 show the "
+            "same result; the option exists to filter out small "
+            "components in a large, heavily-clustered case."
+        ),
+    ),
+    output_format: str = typer.Option(
+        "text", "--format", help="Output format: 'text' (default) or 'json'."
+    ),
+) -> None:
+    """Partition every entity that appears in a Relationship into
+    weakly-connected clusters (components) -- entities joined, directly
+    or through a chain of relationships, treating direction as
+    irrelevant (unlike `graph neighbors`/`graph path`, which are directed
+    by default -- see correlate.graph's module docstring for why cluster
+    membership is a genuinely different question from point-to-point
+    reachability).
+
+    A structural partition only, with full relationship/evidence
+    provenance for every edge -- never a claim that everything in one
+    component shares a cause, an actor, or a conclusion. An entity with
+    no relationships at all is not part of any component.
+    """
+    _validate_graph_format(output_format)
+    if min_size < 1:
+        raise typer.BadParameter("must be at least 1", param_hint="--min-size")
+    case = _open_case_or_fail(case_dir)
+    result = find_components(case.store, min_size=min_size)
+    case.close()
+
+    if output_format == "json":
+        sys.stdout.buffer.write(canonical_json_bytes(components_result_to_json(result)))
+        sys.stdout.buffer.flush()
+        return
+
+    if result.total_entities_in_graph == 0:
+        typer.echo("no relationships in this case -- nothing to partition into components")
+        return
+    if not result.components:
+        typer.echo(
+            f"no components with at least {min_size} entity(ies) -- "
+            f"{result.total_components_found} component(s) exist in this "
+            f"case, none meet that threshold"
+        )
+        return
+    typer.echo(
+        f"{len(result.components)} component(s) covering "
+        f"{sum(len(c.entity_ids) for c in result.components)} of "
+        f"{result.total_entities_in_graph} entities in the relationship "
+        f"graph ({result.total_relationships} relationship(s) total; "
+        f"min-size={min_size})"
+    )
+    for component in result.components:
+        typer.echo(
+            f"- component {component.index}: {len(component.entity_ids)} entities, "
+            f"{len(component.relationships)} relationship(s)"
+        )
+        entities = ", ".join(f"`{eid}`" for eid in component.entity_ids)
+        typer.echo(f"  entities: {entities}")
+        for rel in component.relationships:
+            typer.echo(f"  - {_format_relationship_text(rel)}")
 
 
 def _format_tracked_finding_summary(finding: TrackedGapFinding, still_reproduced: bool) -> str:
