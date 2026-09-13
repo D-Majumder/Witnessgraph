@@ -36,10 +36,15 @@ def export_case(case: Case, output_path: Path) -> Path:
 
 
 def import_case(archive_path: Path, dest_root: Path) -> Case:
-    """Unpack a ``.wgcase`` archive into ``dest_root`` and open it as a Case."""
+    """Unpack a ``.wgcase`` archive into ``dest_root`` and open it as a Case.
+
+    The archive is opened before ``dest_root`` is created, so a missing or
+    invalid archive (``FileNotFoundError``/``zipfile.BadZipFile``) never
+    leaves behind a partially-created, empty destination directory.
+    """
     if dest_root.exists() and any(dest_root.iterdir()):
         raise FileExistsError(f"{dest_root} already exists and is not empty")
-    dest_root.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(archive_path, "r") as zf:
+        dest_root.mkdir(parents=True, exist_ok=True)
         zf.extractall(dest_root)
     return Case.open(dest_root)

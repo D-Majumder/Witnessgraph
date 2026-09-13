@@ -161,6 +161,71 @@ def test_import_of_archive_with_corrupted_case_db_fails_cleanly(tmp_path: Path) 
     assert b"not readable" in result.stderr_bytes
 
 
+def test_report_on_missing_case_dir_fails_cleanly(tmp_path: Path) -> None:
+    missing = tmp_path / "does-not-exist"
+    result = runner.invoke(app, ["report", str(missing)])
+    assert result.exit_code != 0
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert b"does not look like a Witnessgraph case" in result.stderr_bytes
+
+
+def test_verify_on_missing_case_dir_fails_cleanly(tmp_path: Path) -> None:
+    missing = tmp_path / "does-not-exist"
+    result = runner.invoke(app, ["verify", str(missing)])
+    assert result.exit_code != 0
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert b"does not look like a Witnessgraph case" in result.stderr_bytes
+
+
+def test_replay_on_missing_case_dir_fails_cleanly(tmp_path: Path) -> None:
+    missing = tmp_path / "does-not-exist"
+    result = runner.invoke(app, ["replay", str(missing)])
+    assert result.exit_code != 0
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert b"does not look like a Witnessgraph case" in result.stderr_bytes
+
+
+def test_import_of_nonexistent_archive_fails_cleanly(tmp_path: Path) -> None:
+    missing_archive = tmp_path / "does-not-exist.wgcase"
+    dest = tmp_path / "restored"
+    result = runner.invoke(app, ["import", str(missing_archive), str(dest)])
+    assert result.exit_code != 0
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert not dest.exists()
+
+
+def test_import_of_non_zip_archive_fails_cleanly_and_creates_no_directory(
+    tmp_path: Path,
+) -> None:
+    not_a_zip = tmp_path / "not-a-zip.wgcase"
+    not_a_zip.write_text("this is not a zip file")
+    dest = tmp_path / "restored"
+    result = runner.invoke(app, ["import", str(not_a_zip), str(dest)])
+    assert result.exit_code != 0
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert b"not a valid .wgcase archive" in result.stderr_bytes
+    # A failed import must not leave a partially-created, empty destination
+    # directory behind -- see portable.import_case's docstring.
+    assert not dest.exists()
+
+
+def test_import_into_existing_nonempty_dest_fails_cleanly(tmp_path: Path) -> None:
+    case_dir = _make_case(tmp_path)
+    archive = tmp_path / "case.wgcase"
+    export_result = runner.invoke(app, ["export", str(case_dir), str(archive)])
+    assert export_result.exit_code == 0
+
+    dest = tmp_path / "occupied"
+    dest.mkdir()
+    (dest / "existing.txt").write_text("do not touch me")
+
+    result = runner.invoke(app, ["import", str(archive), str(dest)])
+    assert result.exit_code != 0
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert b"already exists and is not empty" in result.stderr_bytes
+    assert (dest / "existing.txt").read_text() == "do not touch me"
+
+
 def test_sqlite_database_error_is_the_confirmed_exception_type() -> None:
     """Documents the empirical check performed before implementation:
     both a garbage file and a header-valid-but-corrupted file raise

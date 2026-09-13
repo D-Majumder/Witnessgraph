@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import NoReturn
@@ -109,6 +110,21 @@ def _fail_corrupted_case(case_dir: Path) -> NoReturn:
     raise typer.Exit(1)
 
 
+def _open_case_or_fail(case_dir: Path) -> Case:
+    """Open a case, turning the missing-directory/unreadable-database
+    exceptions ``Case.open`` raises into the same clean, single-line
+    failure every command should present instead of a raw traceback."""
+    try:
+        return Case.open(case_dir)
+    except FileNotFoundError:
+        typer.echo(
+            f"error: {case_dir} does not look like a Witnessgraph case (no case.db)", err=True
+        )
+        raise typer.Exit(1) from None
+    except sqlite3.DatabaseError:
+        _fail_corrupted_case(case_dir)
+
+
 @app.command()
 def init(case_dir: Path = typer.Argument(..., help="Directory to create the new case in.")) -> None:
     """Create a new, empty case directory."""
@@ -141,7 +157,7 @@ def ingest(
             validate_source_id(source_id)
         except ValueError as exc:
             raise typer.BadParameter(str(exc), param_hint="--source-id") from exc
-    case = Case.open(case_dir)
+    case = _open_case_or_fail(case_dir)
     adapter = get_adapter(adapter_id)
     descriptor = SourceDescriptor(path=source, source_id=source_id)
     result = ingest_source(case, adapter, descriptor, collected_at=datetime.now(UTC))
@@ -166,7 +182,7 @@ def entities_create(
     ),
 ) -> None:
     """Create an entity, explicitly linked to the evidence that established it."""
-    case = Case.open(case_dir)
+    case = _open_case_or_fail(case_dir)
     for ref_id in derived_from:
         is_evidence = case.store.get_evidence(ref_id) is not None
         is_event = case.store.get_normalized_event(ref_id) is not None
@@ -185,7 +201,7 @@ def entities_create(
 
 @entities_app.command("list")
 def entities_list(case_dir: Path) -> None:
-    case = Case.open(case_dir)
+    case = _open_case_or_fail(case_dir)
     for entity in case.store.list_entities():
         typer.echo(f"{entity.id}  {entity.entity_type}  {entity.identifiers}")
     case.close()
@@ -193,7 +209,7 @@ def entities_list(case_dir: Path) -> None:
 
 @entities_app.command("show")
 def entities_show(case_dir: Path, entity_id: str) -> None:
-    case = Case.open(case_dir)
+    case = _open_case_or_fail(case_dir)
     entity = case.store.get_entity(entity_id)
     case.close()
     if entity is None:
@@ -271,7 +287,7 @@ def time_assertions_create(
             param_hint="--value",
         )
 
-    case = Case.open(case_dir)
+    case = _open_case_or_fail(case_dir)
     if case.store.get_normalized_event(event_id) is None:
         case.close()
         raise typer.BadParameter(
@@ -317,7 +333,7 @@ def time_assertions_create(
 @app.command()
 def timeline(case_dir: Path) -> None:
     """Print all normalized events, ordered by their earliest known time assertion."""
-    case = Case.open(case_dir)
+    case = _open_case_or_fail(case_dir)
     assertions_by_event: dict[str, list[TimeAssertion]] = {}
     for assertion in case.store.list_time_assertions():
         assertions_by_event.setdefault(assertion.subject_event_id, []).append(assertion)
@@ -343,7 +359,7 @@ def hypothesis_propose(
     ),
     inferred_by: str = typer.Option("analyst", help="Who is proposing this hypothesis."),
 ) -> None:
-    case = Case.open(case_dir)
+    case = _open_case_or_fail(case_dir)
     refs = tuple(_resolve_evidence_ref(case, eid) for eid in evidence_id)
     hyp = Hypothesis(
         statement=statement,
@@ -365,7 +381,7 @@ def _change_hypothesis_status(
     add_supporting_ids: list[str] | None = None,
     add_contradicting_ids: list[str] | None = None,
 ) -> None:
-    case = Case.open(case_dir)
+    case = _open_case_or_fail(case_dir)
     existing = case.store.get_hypothesis(hypothesis_id)
     if existing is None:
         case.close()
@@ -406,7 +422,7 @@ def hypothesis_contradict(
 
 @hypothesis_app.command("list")
 def hypothesis_list(case_dir: Path) -> None:
-    case = Case.open(case_dir)
+    case = _open_case_or_fail(case_dir)
     for hyp in case.store.list_hypotheses():
         typer.echo(f"{hyp.id}  [{hyp.status.value}]  {hyp.statement}")
     case.close()
@@ -418,7 +434,7 @@ def export(
     output: Path = typer.Argument(..., help="Output .wgcase archive path."),
 ) -> None:
     """Package a case directory into a single portable .wgcase archive."""
-    case = Case.open(case_dir)
+    case = _open_case_or_fail(case_dir)
     export_case(case, output)
     case.close()
     typer.echo(f"exported {case_dir} -> {output}")
@@ -432,6 +448,15 @@ def import_case_cmd(
     """Import a .wgcase archive into a fresh case directory."""
     try:
         case = import_case(archive, dest_dir)
+    except FileNotFoundError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from None
+    except FileExistsError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from None
+    except zipfile.BadZipFile:
+        typer.echo(f"error: {archive} is not a valid .wgcase archive (not a zip file)", err=True)
+        raise typer.Exit(1) from None
     except sqlite3.DatabaseError:
         typer.echo(
             "error: the archive's case database is not readable (corrupted or invalid)",
@@ -479,10 +504,7 @@ def report(
         typer.echo(f"error: {output} already exists", err=True)
         raise typer.Exit(1)
 
-    try:
-        case = Case.open(case_dir)
-    except sqlite3.DatabaseError:
-        _fail_corrupted_case(case_dir)
+    case = _open_case_or_fail(case_dir)
 
     try:
         try:
@@ -524,10 +546,7 @@ def verify(
     and compare it to the recorded one (as `replay` does), and optionally
     confirm the report still regenerates without error.
     """
-    try:
-        case = Case.open(case_dir)
-    except sqlite3.DatabaseError:
-        _fail_corrupted_case(case_dir)
+    case = _open_case_or_fail(case_dir)
 
     report_failed = False
     try:
@@ -583,7 +602,7 @@ def contradictions(
     ),
 ) -> None:
     """Report structural TimeAssertion contradictions found in a case."""
-    case = Case.open(case_dir)
+    case = _open_case_or_fail(case_dir)
     # The full, read-only detection always completes before any
     # persistence is attempted -- see track_contradictions's docstring.
     found = detect_time_contradictions(case.store)
@@ -668,7 +687,7 @@ def gaps(
             "evidence (see docs/phase5-v0.5-gap-analysis-design.md §7/§23)",
             param_hint="--min-corroborating-events",
         )
-    case = Case.open(case_dir)
+    case = _open_case_or_fail(case_dir)
     # The full, read-only analysis always completes before any persistence
     # is attempted -- see track_findings's docstring and the design's
     # transaction-boundary requirement.
@@ -763,7 +782,7 @@ def findings_list(case_dir: Path = typer.Argument(..., help="Case directory to i
     evidence, using each finding's own originally recorded analysis
     parameters, and is never itself persisted.
     """
-    case = Case.open(case_dir)
+    case = _open_case_or_fail(case_dir)
     tracked = case.store.list_tracked_findings()
     if not tracked:
         typer.echo("no tracked findings")
@@ -783,7 +802,7 @@ def findings_show(
     """Show the full detail of one tracked finding, including its live
     "still reproduced" state (see `findings list`'s help for what that
     means and does not mean)."""
-    case = Case.open(case_dir)
+    case = _open_case_or_fail(case_dir)
     finding = case.store.get_tracked_finding(finding_id)
     if finding is None:
         case.close()
@@ -830,7 +849,7 @@ def findings_ack(
             "never invented or inferred by this tool",
             param_hint="--by",
         )
-    case = Case.open(case_dir)
+    case = _open_case_or_fail(case_dir)
     try:
         updated = case.store.annotate_tracked_finding(
             finding_id,
@@ -875,7 +894,7 @@ def contradiction_findings_list(
     adjudicated, or that either assertion is more correct. Witnessgraph
     does not determine which disagreeing assertion is true.
     """
-    case = Case.open(case_dir)
+    case = _open_case_or_fail(case_dir)
     tracked = case.store.list_tracked_contradictions()
     if not tracked:
         typer.echo("no tracked contradictions")
@@ -894,7 +913,7 @@ def contradiction_findings_show(
     ),
 ) -> None:
     """Show the full detail of one tracked contradiction."""
-    case = Case.open(case_dir)
+    case = _open_case_or_fail(case_dir)
     contradiction = case.store.get_tracked_contradiction(contradiction_id)
     if contradiction is None:
         case.close()
@@ -942,7 +961,7 @@ def contradiction_findings_ack(
             "never invented or inferred by this tool",
             param_hint="--by",
         )
-    case = Case.open(case_dir)
+    case = _open_case_or_fail(case_dir)
     try:
         updated = case.store.annotate_tracked_contradiction(
             contradiction_id,
@@ -964,10 +983,7 @@ def contradiction_findings_ack(
 @app.command()
 def replay(case_dir: Path) -> None:
     """Recompute a case's provenance manifest and verify it against the recorded one."""
-    try:
-        case = Case.open(case_dir)
-    except sqlite3.DatabaseError:
-        _fail_corrupted_case(case_dir)
+    case = _open_case_or_fail(case_dir)
     try:
         try:
             result = replay_and_verify(case)
