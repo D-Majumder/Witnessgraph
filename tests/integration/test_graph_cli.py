@@ -68,6 +68,30 @@ class _CaseBuilder:
         self.case.store.put_relationship(rel)
         return rel.id
 
+    def edge_with_derived_from(
+        self, source: str, target: str, derived_from: tuple[str, ...]
+    ) -> str:
+        rel = Relationship.create(
+            relationship_type="connected_to",
+            source_entity_id=self.entity(source),
+            target_entity_id=self.entity(target),
+            derived_from=derived_from,
+            created_at=NOW,
+        )
+        self.case.store.put_relationship(rel)
+        return rel.id
+
+    def second_evidence(self) -> str:
+        ev = EvidenceItem.create(
+            raw_bytes=b"synthetic-2",
+            source_adapter="test",
+            adapter_version="0.0.0",
+            source_locator="test:2",
+            collected_at=NOW,
+        )
+        self.case.store.put_evidence(ev)
+        return ev.id
+
     def finish(self) -> None:
         self.case.record_manifest()
         self.case.close()
@@ -519,6 +543,98 @@ def test_paths_works_on_a_case_predating_relationships(tmp_path: Path) -> None:
     result = runner.invoke(app, ["graph", "paths", str(b.case_dir), "entity-A", "entity-B"])
     assert result.exit_code == 0
     assert "no path found" in result.stdout
+
+
+# -- paths: evidence independence (--explain) -----------------------------------
+
+
+def _make_diamond_case_disjoint_evidence(tmp_path: Path) -> Path:
+    """A->B->D and A->C->D, each chain derived_from its own distinct
+    EvidenceItem -- structurally distinct AND evidence-independent."""
+    b = _CaseBuilder(tmp_path / "case")
+    ev2 = b.second_evidence()
+    b.edge_with_derived_from("A", "B", (b.evidence.id,))
+    b.edge_with_derived_from("B", "D", (b.evidence.id,))
+    b.edge_with_derived_from("A", "C", (ev2,))
+    b.edge_with_derived_from("C", "D", (ev2,))
+    b.finish()
+    return b.case_dir
+
+
+def test_paths_explain_reports_fully_evidence_independent(tmp_path: Path) -> None:
+    case_dir = _make_diamond_case_disjoint_evidence(tmp_path)
+    result = runner.invoke(
+        app, ["graph", "paths", str(case_dir), "entity-A", "entity-D", "--explain"]
+    )
+    assert result.exit_code == 0
+    assert "evidence independence:" in result.stdout
+    assert "fully evidence-independent: true" in result.stdout
+
+
+def test_paths_explain_reports_shared_evidence_not_independent(tmp_path: Path) -> None:
+    """`_make_diamond_case` gives every relationship the *same* shared
+    EvidenceItem -- both structurally distinct chains cite it, so this
+    must be reported as NOT evidence-independent."""
+    case_dir = _make_diamond_case(tmp_path)
+    result = runner.invoke(
+        app, ["graph", "paths", str(case_dir), "entity-A", "entity-D", "--explain"]
+    )
+    assert result.exit_code == 0
+    assert "evidence independence:" in result.stdout
+    assert "fully evidence-independent: false" in result.stdout
+    assert "shared evidence:" in result.stdout
+
+
+def test_paths_explain_single_chain_evidence_independence_not_applicable(
+    tmp_path: Path,
+) -> None:
+    case_dir = _make_chain_case(tmp_path)
+    result = runner.invoke(
+        app, ["graph", "paths", str(case_dir), "entity-A", "entity-B", "--explain"]
+    )
+    assert result.exit_code == 0
+    assert "evidence independence:" in result.stdout
+    assert "does not apply" in result.stdout
+
+
+def test_paths_without_explain_never_shows_evidence_independence(tmp_path: Path) -> None:
+    case_dir = _make_diamond_case(tmp_path)
+    result = runner.invoke(app, ["graph", "paths", str(case_dir), "entity-A", "entity-D"])
+    assert result.exit_code == 0
+    assert "evidence independence" not in result.stdout
+
+
+def test_paths_json_explain_includes_evidence_independence(tmp_path: Path) -> None:
+    case_dir = _make_diamond_case_disjoint_evidence(tmp_path)
+    result = runner.invoke(
+        app,
+        ["graph", "paths", str(case_dir), "entity-A", "entity-D", "--explain", "--format", "json"],
+    )
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    overlap = doc["evidence_independence"]
+    assert overlap["fully_evidence_independent"] is True
+    assert overlap["shared_evidence_ids"] == []
+    assert len(overlap["chains"]) == 2
+    assert overlap["chains"][0]["root_evidence_ids"]
+
+
+def test_paths_json_without_explain_omits_evidence_independence(tmp_path: Path) -> None:
+    case_dir = _make_diamond_case(tmp_path)
+    result = runner.invoke(
+        app, ["graph", "paths", str(case_dir), "entity-A", "entity-D", "--format", "json"]
+    )
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "evidence_independence" not in doc
+
+
+def test_paths_explain_evidence_independence_deterministic_across_calls(tmp_path: Path) -> None:
+    case_dir = _make_diamond_case_disjoint_evidence(tmp_path)
+    args = ["graph", "paths", str(case_dir), "entity-A", "entity-D", "--explain"]
+    first = runner.invoke(app, args)
+    second = runner.invoke(app, args)
+    assert first.stdout == second.stdout
 
 
 # -- cycles / branching (CLI-level smoke; algorithmic depth covered in

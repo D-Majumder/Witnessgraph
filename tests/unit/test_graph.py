@@ -26,6 +26,7 @@ from witnessgraph.correlate.graph import (
     MAX_ALLOWED_PATHS_LIMIT,
     GraphDirection,
     all_shortest_paths_result_to_json,
+    analyze_paths_evidence_overlap,
     components_result_to_json,
     explain_relationship,
     find_all_shortest_paths,
@@ -34,6 +35,7 @@ from witnessgraph.correlate.graph import (
     find_path,
     neighbors_result_to_json,
     path_result_to_json,
+    paths_evidence_overlap_to_json,
     resolve_entity,
     resolve_evidence_ref,
 )
@@ -579,6 +581,202 @@ def test_all_shortest_paths_to_json_explain_is_additive(graph: _Graph) -> None:
     assert graph.entity("B") in explained["entities"]  # type: ignore[operator]
     first_step_rel = explained["paths"][0][0]["relationship"]  # type: ignore[index]
     assert "evidence_lineage" in first_step_rel
+
+
+# -- analyze_paths_evidence_overlap -------------------------------------------
+
+
+def test_evidence_overlap_disjoint_evidence_is_fully_independent(graph: _Graph) -> None:
+    """Two structurally distinct chains, each derived_from a different
+    EvidenceItem: structurally distinct AND evidence-independent."""
+    ev2 = EvidenceItem.create(
+        raw_bytes=b"second", source_adapter="test", adapter_version="0.0.0",
+        source_locator="test:2", collected_at=NOW,
+    )
+    graph.case.store.put_evidence(ev2)
+    graph.edge_with_derived_from("A", "B", (graph.evidence_id,))
+    graph.edge_with_derived_from("B", "D", (graph.evidence_id,))
+    graph.edge_with_derived_from("A", "C", (ev2.id,))
+    graph.edge_with_derived_from("C", "D", (ev2.id,))
+
+    result = find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("D"))
+    assert len(result.paths) == 2
+    overlap = analyze_paths_evidence_overlap(graph.case.store, result)
+    assert overlap.fully_evidence_independent is True
+    assert overlap.shared_evidence_ids == ()
+    assert {c.root_evidence_ids for c in overlap.chains} == {(graph.evidence_id,), (ev2.id,)}
+
+
+def test_evidence_overlap_shared_raw_derived_from_is_not_independent(graph: _Graph) -> None:
+    """Two structurally distinct chains that both cite the exact same
+    EvidenceItem id directly: structurally distinct but NOT
+    evidence-independent."""
+    graph.edge_with_derived_from("A", "B", (graph.evidence_id,))
+    graph.edge_with_derived_from("B", "D", (graph.evidence_id,))
+    graph.edge_with_derived_from("A", "C", (graph.evidence_id,))
+    graph.edge_with_derived_from("C", "D", (graph.evidence_id,))
+
+    result = find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("D"))
+    assert len(result.paths) == 2
+    overlap = analyze_paths_evidence_overlap(graph.case.store, result)
+    assert overlap.fully_evidence_independent is False
+    assert overlap.shared_evidence_ids == (graph.evidence_id,)
+    for chain_evidence in overlap.chains:
+        assert chain_evidence.root_evidence_ids == (graph.evidence_id,)
+
+
+def test_evidence_overlap_resolves_shared_root_through_normalized_event(graph: _Graph) -> None:
+    """Structural path multiplicity is NOT evidence independence: chain 1
+    derived_from the EvidenceItem directly, chain 2 derived_from a
+    NormalizedEvent built from that *same* EvidenceItem -- the raw
+    derived_from ids differ, but both resolve to the same root
+    EvidenceItem, so this must be reported as NOT independent."""
+    normalized = graph.normalized_event()
+    graph.edge_with_derived_from("A", "B", (graph.evidence_id,))
+    graph.edge_with_derived_from("B", "D", (graph.evidence_id,))
+    graph.edge_with_derived_from("A", "C", (normalized,))
+    graph.edge_with_derived_from("C", "D", (normalized,))
+
+    result = find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("D"))
+    assert len(result.paths) == 2
+    # The raw derived_from ids genuinely differ...
+    raw_ids = {step.relationship.derived_from for chain in result.paths for step in chain}
+    assert raw_ids == {(graph.evidence_id,), (normalized,)}
+    # ...but the root evidence resolves to the same underlying EvidenceItem.
+    overlap = analyze_paths_evidence_overlap(graph.case.store, result)
+    assert overlap.fully_evidence_independent is False
+    assert overlap.shared_evidence_ids == (graph.evidence_id,)
+    for chain_evidence in overlap.chains:
+        assert chain_evidence.root_evidence_ids == (graph.evidence_id,)
+
+
+def test_evidence_overlap_single_chain_is_not_applicable(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    result = find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("B"))
+    assert len(result.paths) == 1
+    overlap = analyze_paths_evidence_overlap(graph.case.store, result)
+    assert overlap.fully_evidence_independent is None
+    assert overlap.shared_evidence_ids == ()
+    assert len(overlap.chains) == 1
+    assert overlap.chains[0].root_evidence_ids == (graph.evidence_id,)
+
+
+def test_evidence_overlap_no_paths_found_is_not_applicable(graph: _Graph) -> None:
+    graph.entity("A")
+    graph.entity("B")
+    result = find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("B"))
+    assert not result.found
+    overlap = analyze_paths_evidence_overlap(graph.case.store, result)
+    assert overlap.chains == ()
+    assert overlap.shared_evidence_ids == ()
+    assert overlap.fully_evidence_independent is None
+
+
+def test_evidence_overlap_trivial_same_entity_path_has_no_evidence(graph: _Graph) -> None:
+    a = graph.entity("A")
+    result = find_all_shortest_paths(graph.case.store, a, a)
+    overlap = analyze_paths_evidence_overlap(graph.case.store, result)
+    assert len(overlap.chains) == 1
+    assert overlap.chains[0].root_evidence_ids == ()
+    assert overlap.fully_evidence_independent is None
+
+
+def test_evidence_overlap_dangling_derived_from_contributes_nothing(graph: _Graph) -> None:
+    """A derived_from id naming neither an EvidenceItem nor a
+    NormalizedEvent (core/ does not enforce referential integrity at
+    construction time) resolves to no root evidence, never a crash."""
+    graph.edge_with_derived_from("A", "B", ("no-such-evidence-id",))
+    result = find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("B"))
+    overlap = analyze_paths_evidence_overlap(graph.case.store, result)
+    assert overlap.chains[0].root_evidence_ids == ()
+
+
+def test_evidence_overlap_terminates_on_malformed_normalized_event_cycle(graph: _Graph) -> None:
+    """core/ does not enforce that a NormalizedEvent's derived_from names
+    an EvidenceItem (only that a Relationship/NormalizedEvent's
+    derived_from is non-empty) -- a hypothetically malformed pair of
+    NormalizedEvents citing each other must not hang resolution."""
+    ne_a = NormalizedEvent(id="ne-a", event_type="t", derived_from=("ne-b",), created_at=NOW)
+    ne_b = NormalizedEvent(id="ne-b", event_type="t", derived_from=("ne-a",), created_at=NOW)
+    graph.case.store.put_normalized_event(ne_a)
+    graph.case.store.put_normalized_event(ne_b)
+    graph.edge_with_derived_from("A", "B", ("ne-a",))
+    result = find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("B"))
+    overlap = analyze_paths_evidence_overlap(graph.case.store, result)
+    assert overlap.chains[0].root_evidence_ids == ()  # no root EvidenceItem ever found
+
+
+def test_evidence_overlap_deterministic_ordering_of_ids(graph: _Graph) -> None:
+    ev_z = EvidenceItem.create(
+        raw_bytes=b"z", source_adapter="test", adapter_version="0.0.0",
+        source_locator="test:z", collected_at=NOW,
+    )
+    graph.case.store.put_evidence(ev_z)
+    graph.edge_with_derived_from("A", "B", (ev_z.id, graph.evidence_id))
+    result = find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("B"))
+    overlap = analyze_paths_evidence_overlap(graph.case.store, result)
+    ids = overlap.chains[0].root_evidence_ids
+    assert ids == tuple(sorted(ids))
+
+
+def test_evidence_overlap_three_chains_partial_overlap(graph: _Graph) -> None:
+    """Chain 1 and chain 2 share evidence; chain 3 is disjoint from both --
+    shared_evidence_ids reports exactly the id shared by 2+, and the
+    overall verdict is correctly False (not fully independent)."""
+    ev2 = EvidenceItem.create(
+        raw_bytes=b"second", source_adapter="test", adapter_version="0.0.0",
+        source_locator="test:2", collected_at=NOW,
+    )
+    graph.case.store.put_evidence(ev2)
+    graph.edge_with_derived_from("A", "B", (graph.evidence_id,))
+    graph.edge_with_derived_from("B", "E", (graph.evidence_id,))
+    graph.edge_with_derived_from("A", "C", (graph.evidence_id,))
+    graph.edge_with_derived_from("C", "E", (graph.evidence_id,))
+    graph.edge_with_derived_from("A", "D", (ev2.id,))
+    graph.edge_with_derived_from("D", "E", (ev2.id,))
+
+    result = find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("E"))
+    assert len(result.paths) == 3
+    overlap = analyze_paths_evidence_overlap(graph.case.store, result)
+    assert overlap.fully_evidence_independent is False
+    assert overlap.shared_evidence_ids == (graph.evidence_id,)
+
+
+def test_evidence_overlap_to_json_structure(graph: _Graph) -> None:
+    graph.edge_with_derived_from("A", "B", (graph.evidence_id,))
+    graph.edge_with_derived_from("B", "D", (graph.evidence_id,))
+    graph.edge_with_derived_from("A", "C", (graph.evidence_id,))
+    graph.edge_with_derived_from("C", "D", (graph.evidence_id,))
+    diamond = find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("D"))
+    overlap = analyze_paths_evidence_overlap(graph.case.store, diamond)
+    doc = paths_evidence_overlap_to_json(overlap)
+    assert doc["fully_evidence_independent"] is False
+    assert doc["shared_evidence_ids"] == [graph.evidence_id]
+    assert isinstance(doc["chains"], list)
+    assert len(doc["chains"]) == 2
+    assert doc["chains"][0]["chain_index"] == 0
+    assert doc["chains"][0]["root_evidence_ids"] == [graph.evidence_id]
+
+
+def test_all_shortest_paths_json_explain_includes_evidence_independence(graph: _Graph) -> None:
+    """all_shortest_paths_result_to_json wires evidence_independence into
+    its output automatically whenever store (--explain) is given --
+    additive and opt-in, exactly like `entities`."""
+    ev2 = EvidenceItem.create(
+        raw_bytes=b"second", source_adapter="test", adapter_version="0.0.0",
+        source_locator="test:2", collected_at=NOW,
+    )
+    graph.case.store.put_evidence(ev2)
+    graph.edge_with_derived_from("A", "B", (graph.evidence_id,))
+    graph.edge_with_derived_from("B", "D", (graph.evidence_id,))
+    graph.edge_with_derived_from("A", "C", (ev2.id,))
+    graph.edge_with_derived_from("C", "D", (ev2.id,))
+    result = find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("D"))
+    plain = all_shortest_paths_result_to_json(result)
+    explained = all_shortest_paths_result_to_json(result, store=graph.case.store)
+    assert "evidence_independence" not in plain
+    assert "evidence_independence" in explained
+    assert explained["evidence_independence"]["fully_evidence_independent"] is True  # type: ignore[index]
 
 
 # -- cycles -----------------------------------------------------------------
