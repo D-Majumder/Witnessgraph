@@ -77,6 +77,7 @@ store; see `DESIGN.md` for what stays out of scope by design.
 | `relationships create / list / show [--entity]` | Create and inspect directed, evidence-backed relationships (graph edges) between two entities. |
 | `graph neighbors <entity> [--max-depth] [--direction] [--explain]` | List every entity reachable from one entity within a bounded number of hops. |
 | `graph path <source> <target> [--max-depth] [--direction] [--explain]` | Find one deterministic, shortest relationship chain between two entities, with full provenance. |
+| `graph paths <source> <target> [--max-depth] [--direction] [--limit] [--explain]` | Find every relationship chain tied for shortest between two entities, up to `--limit`, with full provenance. |
 | `graph components [--min-size] [--explain]` | Partition every related entity into weakly-connected clusters, direction-independent. |
 | `time-assertions create` | Record one analyst's explicit, cited claim about when an event occurred. |
 | `hypothesis propose / support / contradict / list` | Manage evidence-backed hypotheses — never bare, unsupported claims. |
@@ -226,6 +227,57 @@ what was actually recorded. A path or neighborhood describes a
 *structural connection*, evidenced by cited relationships, and nothing
 more: it is never itself a claim of causation, responsibility, or truth.
 
+### All shortest paths
+
+`graph path` reports one representative shortest chain; it cannot tell
+you whether that connection is corroborated by more than one
+independent chain of relationships, or rests on a single link that one
+missing or mistaken `Relationship` would sever entirely. `witnessgraph
+graph paths` answers exactly that: every distinct chain tied for the
+same shortest (fewest-hop) length between two entities, up to
+`--limit`.
+
+```sh
+witnessgraph graph paths ./my-case <source-entity-id> <target-entity-id>
+witnessgraph graph paths ./my-case <source-entity-id> <target-entity-id> --limit 25
+witnessgraph graph paths ./my-case <source-entity-id> <target-entity-id> --format json
+```
+
+Example output:
+
+```
+2 shortest chain(s) found: 2 hop(s) each
+chain 1:
+  step 1: <A> --[connected_to via `<rel-1>`, forward]--> <B> (derived_from: `<ev-1>`)
+  step 2: <B> --[connected_to via `<rel-2>`, forward]--> <D> (derived_from: `<ev-1>`)
+chain 2:
+  step 1: <A> --[connected_to via `<rel-3>`, forward]--> <C> (derived_from: `<ev-1>`)
+  step 2: <C> --[connected_to via `<rel-4>`, forward]--> <D> (derived_from: `<ev-1>`)
+```
+
+**Shortest-length chains only, still not "all paths".** A longer detour
+between the same two entities is never reported, exactly as `graph
+path` never reports one — only chains tied for the minimum hop count
+are in scope. **Hard-capped, not merely bounded by depth.** Even
+restricted to shortest length, the number of tied chains can grow
+quickly in a densely-connected graph; `--limit` (default 10, capped at
+500) is a real ceiling on how many are ever materialized. A result with
+`"truncated": true` means more tied-shortest chains exist beyond
+`--limit` — reported honestly, never silently dropped or presented as
+complete. Computation is bounded, not exponential: one extra bounded
+BFS pass (backward from the target) restricts the search to only the
+edges that can possibly lie on a shortest chain, so enumeration never
+explores a dead end and always stops the instant `--limit` chains are
+found.
+
+**Corroboration, not confirmation.** Multiple independent shortest
+chains are a structural fact — the connection does not depend on any
+single `Relationship` — never a claim that it is therefore true,
+important, or causal. A single chain is likewise never reported as
+suspect; it is simply what the evidence currently records. `graph
+paths <X> <X>` (source equals target) is trivially one zero-hop chain,
+exactly like `graph path`.
+
 ### Connected components
 
 `witnessgraph graph components` answers a different question from
@@ -279,9 +331,10 @@ inside every component still carries its full `derived_from` lineage.
 **Limitations:** no entity resolution or fuzzy matching is performed —
 two different entity ids are always treated as different entities, even
 if they plausibly refer to the same real-world thing (consistent with
-`entities create`'s own v1.0 scope). There is no "all paths" or induced-
-subgraph command; only bounded neighborhoods, one shortest path, and
-weakly-connected components. A component is a structural grouping only —
+`entities create`'s own v1.0 scope). There is no induced-subgraph
+command, and `graph paths` reports only chains tied for the *shortest*
+length, capped at `--limit` — never every path of every length between
+two entities. A component is a structural grouping only —
 membership is never a claim that everything inside it shares a cause, an
 actor, or a conclusion. Graph analysis is not integrated into `report` —
 it stays a dedicated CLI output so an ordinary report never pays for a
@@ -289,11 +342,12 @@ traversal or partition it didn't ask for.
 
 ### Explainability (`--explain`)
 
-Every `graph neighbors`/`graph path`/`graph components` result already
-names its relationships' ids, types, and `derived_from` evidence ids —
-but until now, turning one of those ids into something readable meant a
-manual, out-of-band lookup (there is still no standalone `evidence show`
-command). `--explain`, accepted by all three commands, closes that gap:
+Every `graph neighbors`/`graph path`/`graph paths`/`graph components`
+result already names its relationships' ids, types, and `derived_from`
+evidence ids — but until now, turning one of those ids into something
+readable meant a manual, out-of-band lookup (there is still no
+standalone `evidence show` command). `--explain`, accepted by all four
+commands, closes that gap:
 it resolves every relationship's `derived_from` ids and every
 participating entity id to their actual stored records, so a result
 answers *why* Witnessgraph produced it without a second lookup.
@@ -327,7 +381,7 @@ EvidenceItem nor a NormalizedEvent (`core/` does not enforce referential
 integrity at construction time) is reported as `"not_found"`, not
 dropped or raised as an error. `--explain` is strictly bounded by the
 result it explains: it resolves only ids already present in an
-already-bounded `neighbors`/`path` result or an already-whole-graph
+already-bounded `neighbors`/`path`/`paths` result or an already-whole-graph
 `components` result — no new traversal, no new depth parameter.
 
 `--explain` is additive and opt-in: omitting it reproduces byte-for-byte

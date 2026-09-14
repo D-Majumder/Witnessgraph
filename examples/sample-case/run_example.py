@@ -117,6 +117,12 @@ def main() -> None:
     # stored records, so the answer needs no second, manual lookup.
     run_cli("graph", "path", str(case_dir), user_entity_id, ip_entity_id, "--explain")
 
+    # Is that chain the only one, or is the connection corroborated by
+    # more than one independent relationship chain of the same length?
+    # In this case there is exactly one -- `graph paths` reports that
+    # honestly (1 chain found, not truncated) rather than implying more.
+    run_cli("graph", "paths", str(case_dir), user_entity_id, ip_entity_id)
+
     run_cli("timeline", str(case_dir))
     run_cli("contradictions", str(case_dir))
 
