@@ -62,7 +62,7 @@ any command (or command group) below for the exact options.
 The core object model (evidence, provenance, hypotheses) is stable at
 v0.1 (`DESIGN.md`'s seven locked principles). Everything else below was
 added afterward, in the same evidence-first style, and is exercised by
-635 tests. There is no AI integration, no graph database, and no web
+731 tests. There is no AI integration, no graph database, and no web
 UI — this is deliberately a local CLI over a SQLite + content-addressed
 store; see `DESIGN.md` for what stays out of scope by design.
 
@@ -81,10 +81,10 @@ store; see `DESIGN.md` for what stays out of scope by design.
 | `graph components [--min-size] [--explain]` | Partition every related entity into weakly-connected clusters, direction-independent. |
 | `time-assertions create` | Record one analyst's explicit, cited claim about when an event occurred. |
 | `hypothesis propose / support / contradict / list` | Manage evidence-backed hypotheses — never bare, unsupported claims. |
-| `contradictions [--track]` | Report structural `TimeAssertion` contradictions, optionally persisting each as a tracked finding. |
-| `gaps --min-gap-seconds [--refine-source-by-attribute] [--track]` | Report deterministic cross-source evidence coverage gaps between analyst-declared sources. |
-| `findings list / show / ack` | Inspect and annotate persisted, tracked gap findings. |
-| `contradiction-findings list / show / ack` | Inspect and annotate persisted, tracked contradiction findings. |
+| `contradictions [--track] [--format]` | Report structural `TimeAssertion` contradictions, optionally persisting each as a tracked finding. |
+| `gaps --min-gap-seconds [--refine-source-by-attribute] [--track] [--format]` | Report deterministic cross-source evidence coverage gaps between analyst-declared sources. |
+| `findings list / show [--format] / ack` | Inspect and annotate persisted, tracked gap findings. |
+| `contradiction-findings list [--format] / show / ack` | Inspect and annotate persisted, tracked contradiction findings. |
 | `report [--format markdown\|json] [--output]` | Render a case's full investigative content as one deterministic document. |
 | `export` / `import` | Package a case into a portable `.wgcase` archive and restore it elsewhere. |
 | `verify [--report]` | Recompute a case's provenance manifest and confirm it matches the recorded one. |
@@ -529,6 +529,48 @@ adjudicates which claim is correct — a contradiction is recorded and
 left for a human to resolve; there is no "most trusted source" logic
 anywhere in the codebase.
 
+### Machine-readable output for contradictions, gaps, and findings
+
+`graph *` and `report` have always had a `--format json` alternative to
+their human-readable text output; `contradictions`, `gaps`, `findings
+list`/`show`, and `contradiction-findings list` now do too — closing
+the one remaining gap in an otherwise-consistent rule: **every
+analytical result Witnessgraph can compute is available as canonical,
+deterministic JSON, with no exception that would force a consumer to
+scrape human-readable text.**
+
+```sh
+witnessgraph contradictions ./my-case --format json
+witnessgraph gaps ./my-case --min-gap-seconds 300 --format json
+witnessgraph findings list ./my-case --format json
+witnessgraph findings show ./my-case <finding-id> --format json
+witnessgraph contradiction-findings list ./my-case --format json
+```
+
+`findings show --format json` is also a small correctness fix, not only
+an addition: the pre-existing default output already contained the
+finding's live "still reproduced" fact, but only as a second,
+unstructured text line appended after a JSON blob — a machine consumer
+had to parse two different things to get both facts. `--format json`
+folds `still_reproduced` into the one structured document instead, as a
+real field; the pre-existing two-part text output is completely
+unchanged when `--format` is omitted.
+
+`--track`'s outcome (new/already-tracked counts) is included in
+`contradictions`/`gaps`' JSON too (`"tracked": {"new": N,
+"already_tracked": M}`, or `null` when `--track` was not passed) —
+tracking behavior itself is unchanged; only its result is now also
+represented as data rather than only as a trailing text line.
+
+All five reuse the exact serialization logic `report --format json`
+already used internally for these same result types (`correlate.
+contradictions.contradictions_to_json`, `correlate.gaps.
+gap_analysis_to_json`, `correlate.tracking.tracked_finding_to_json`,
+`correlate.contradiction_tracking.tracked_contradiction_to_json`) —
+promoted to public, reusable functions rather than duplicated, so
+`report`'s own JSON output is unchanged and drawn from the same code
+path a standalone command now also uses.
+
 ## Testing
 
 ```sh
@@ -537,7 +579,7 @@ ruff check .
 mypy src
 ```
 
-635 tests (unit + integration) exercise the full pipeline, including
+731 tests (unit + integration) exercise the full pipeline, including
 property-based tests (`hypothesis`) for serialization and provenance
 determinism. `ruff` and `mypy --strict` are both clean on `src/`.
 
