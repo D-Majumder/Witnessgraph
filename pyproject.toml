@@ -12,6 +12,8 @@ license = { text = "MIT" }
 dependencies = [
     "pydantic>=2.6",
     "typer>=0.12",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
@@ -20,10 +22,12 @@ dev = [
     "hypothesis>=6.100",
     "ruff>=0.5",
     "mypy>=1.10",
+    "httpx>=0.27",
 ]
 
 [project.scripts]
 witnessgraph = "witnessgraph.cli.main:app"
+witnessgraph-api = "witnessgraph.api.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/witnessgraph"]
@@ -49,6 +53,12 @@ ignore = ["UP042"]
 # build static parameter metadata, not per-call mutable defaults, so B008
 # ("no function calls in argument defaults") does not apply here.
 "src/witnessgraph/cli/main.py" = ["B008"]
+# FastAPI's documented parameter-declaration idiom is the same shape as
+# Typer's above: `x: T = fastapi.Query(...)` / `fastapi.Depends(...)` are
+# evaluated once, at route-registration time, to build static parameter
+# metadata -- not a per-call mutable default -- so B008 does not apply
+# to this package either.
+"src/witnessgraph/api/routes/*.py" = ["B008"]
 
 [tool.mypy]
 python_version = "3.11"
