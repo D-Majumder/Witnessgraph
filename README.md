@@ -62,7 +62,7 @@ any command (or command group) below for the exact options.
 The core object model (evidence, provenance, hypotheses) is stable at
 v0.1 (`DESIGN.md`'s seven locked principles). Everything else below was
 added afterward, in the same evidence-first style, and is exercised by
-778 tests. There is no AI integration and no graph database — this is
+804 tests. There is no AI integration and no graph database — this is
 deliberately a local CLI plus a thin, local-only, optional web UI over a
 SQLite + content-addressed store; see `DESIGN.md` for what stays out of
 scope by design. See [Web UI (v1)](#web-ui-v1) below for the UI.
@@ -612,6 +612,15 @@ the backend over `fetch()` at `http://127.0.0.1:8420` by default —
 override with a `VITE_API_BASE_URL` environment variable (see
 `frontend/.env.example`) if the backend runs on a different port.
 
+**Views:** Graph (entities/relationships/components, path and
+tied-shortest-paths exploration, evidence-independence panel),
+Evidence, Timeline, Contradictions (detect + track as findings), Gaps
+(analyze + track as findings), and Findings (the review/acknowledgement
+workflow for both tracked-finding kinds). The graph is the central
+workspace; every other view is a focused, structured-JSON-only screen —
+none of them parse CLI text or recompute graph/correlation logic
+client-side.
+
 **Frontend checks:**
 
 ```sh
@@ -630,7 +639,7 @@ ruff check .
 mypy src
 ```
 
-778 tests (unit + integration) exercise the full pipeline, including
+804 tests (unit + integration) exercise the full pipeline, including
 property-based tests (`hypothesis`) for serialization and provenance
 determinism. `ruff` and `mypy --strict` are both clean on `src/`.
 

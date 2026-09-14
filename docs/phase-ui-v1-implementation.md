@@ -1,30 +1,36 @@
 # Witnessgraph UI v1 — Implementation Report
 
-Status: **first working vertical slice implemented.** Written against
-the architecture in `docs/phase-ui-v1-architecture-design.md`, which
-this document does not redesign — it records what was actually built,
-where it matches that design exactly, and the handful of places it
-deviates or extends, with the reasoning for each. Read the architecture
-document first; this one assumes it.
+Status: **complete, hardened first vertical slice.** Written against the
+architecture in `docs/phase-ui-v1-architecture-design.md`, which this
+document does not redesign — it records what was actually built, where
+it matches that design exactly, and the handful of places it deviates
+or extends, with the reasoning for each. Read the architecture document
+first; this one assumes it. This revision supersedes the initial
+vertical-slice pass: it adds the Evidence/Timeline/Gaps/Findings views,
+contradiction/gap tracking, and the acknowledgement workflow that pass
+deliberately deferred, and records a review of the "always resolve
+explainability data" decision made in that first pass.
 
 ## 1. What exists now
 
 ```
 existing Witnessgraph engine (core/store/correlate/replay, unchanged)
         |
-witnessgraph.service        <- NEW, thin (§2 below)
+witnessgraph.service        <- thin (§2)
         |
-witnessgraph.api            <- NEW, FastAPI, local-only (§3 below)
+witnessgraph.api            <- FastAPI, local-only (§3)
         |
-frontend/ (React + TS + Cytoscape.js)   <- NEW (§4 below)
+frontend/ (React + TS + Cytoscape.js)   <- §4
 ```
 
 The engine itself (`core/`, `store/`, `ingest/`, `correlate/`, `replay/`)
 was **not modified in behavior** — every change to it is either a new,
 additive `*_to_json`/public-wrapper function (never touching an existing
-one's output) or a pure aggregation function (`correlate/overview.py`).
-778 tests pass (731 pre-existing + 47 new); `ruff check .` and
-`mypy src` are both clean.
+one's output) or a pure aggregation/projection function
+(`correlate/overview.py`, `correlate/timeline.py`). 804 tests pass (731
+pre-existing + 73 new across both passes); `ruff check .` and
+`mypy src` are both clean; the frontend has 35 Vitest tests and clean
+`oxlint`/`tsc --noEmit`/`vite build`.
 
 ## 2. Service layer (`src/witnessgraph/service/`)
 
@@ -32,266 +38,329 @@ Modules, each a thin wrapper over the corresponding `correlate`/`store`
 call, matching the CLI's own case-opening/validation/error sequence:
 
 - `errors.py` — `CaseNotFoundError`, `CaseUnreadableError`,
-  `EntityNotFoundError`, `RelationshipNotFoundError`, `ValidationError`.
-  A closed, small set the CLI and the API each translate into their own
-  idiom (an exit code + stderr line, or an HTTP status + JSON body).
-- `case_service.py` — `open_case` (mirrors `cli.main._open_case_or_fail`
-  exactly), `get_case_overview` (fills architecture §5 gap #1 via the
-  new `correlate.overview` module).
+  `EntityNotFoundError`, `RelationshipNotFoundError`,
+  `TrackedFindingNotFoundError`, `TrackedContradictionNotFoundError`,
+  `ValidationError`. A closed, small set the CLI and the API each
+  translate into their own idiom (an exit code + stderr line, or an
+  HTTP status + JSON body).
+- `case_service.py` — `open_case`, `get_case_overview` (architecture §5
+  gap #1, via `correlate.overview`).
 - `entities_service.py` — `list_entities`/`get_entity`.
 - `relationships_service.py` — `list_relationships`/`get_relationship`
-  (the latter always resolves `evidence_lineage` — see §3's API note).
+  (the latter always resolves `evidence_lineage`).
 - `graph_service.py` — `neighbors`/`path`/`paths`/`components`, each
-  taking an `explain: bool` so the CLI can keep its existing opt-in
-  verbosity control while the API always passes `explain=True`.
-- `contradictions_service.py` — `list_contradictions`.
-- `evidence_service.py` — `resolve_evidence` (see §5, a deliberate small
-  extension beyond the architecture's original gap list).
+  taking an `explain: bool` so the CLI keeps its opt-in verbosity
+  control while the API always passes `explain=True` (see §5).
+- `evidence_service.py` — `list_evidence` (Evidence-browse, second pass)
+  and `resolve_evidence` (single-reference resolution, first pass).
+- `timeline_service.py` — `get_timeline` (architecture §5 gap #4, second
+  pass), wrapping the new `correlate.timeline.build_timeline_json`.
+- `contradictions_service.py` — `list_contradictions` (read) and
+  `track_detected_contradictions` (write, second pass).
+- `gaps_service.py` — `analyze_gaps` (read) and `track_gaps` (write,
+  second pass), mirroring `cli.main.gaps`'s validation and
+  read-then-persist transaction ordering exactly.
+- `findings_service.py` / `contradiction_findings_service.py` (second
+  pass) — list/get/ack for each tracked-finding kind. `ack_*` requires a
+  non-blank analyst identity and accepts only the three existing
+  `FindingStatus` values (`open`/`reviewed`/`dismissed`) — there is no
+  code path that can produce or accept "validated"/"confirmed".
 
-**Small, additive engine changes made to support this layer** (all
-covered by new/existing tests, none changing any existing output):
+**Additive engine changes made to support this layer** (all covered by
+tests, none changing any existing output):
 
-- `core/provenance.py`: extracted `manifest_verdict()` out of
-  `report/render_json.py`'s private `_build_manifest`, so both the
-  report renderer and `correlate.overview` compute the exact same
-  verdict from the exact same logic. `_build_manifest`'s own output is
-  byte-for-byte unchanged.
-- `core/entities.py`: added public `entity_to_json()`, matching
-  `report/render_json._build_entities`'s per-entity shape exactly;
-  `_build_entities` now calls it instead of duplicating the dict.
-- `correlate/graph.py`: added public `relationship_to_json()` and
-  `resolved_evidence_ref_to_json()` as thin aliases of the existing
-  private `_relationship_to_json`/`_resolved_evidence_ref_to_json` —
-  no behavior change, just a supported entry point for callers outside
-  this module.
-- `correlate/overview.py` (new module): `CaseOverview` dataclass +
-  `compute_case_overview`/`case_overview_to_json`, filling architecture
-  §5 gap #1 exactly as that document specified.
+- `core/provenance.py`: public `manifest_verdict()`, shared by
+  `report/render_json.py` and `correlate.overview`.
+- `core/entities.py`: public `entity_to_json()`, reused by
+  `report/render_json._build_entities`.
+- `correlate/graph.py`: public `relationship_to_json`,
+  `resolved_evidence_ref_to_json`, `evidence_item_to_json`,
+  `normalized_event_to_json` — thin aliases of the pre-existing private
+  functions, exposed for callers outside this module.
+- `correlate/overview.py` — case counts + manifest verdict (gap #1).
+- `correlate/timeline.py` (second pass) — `build_timeline_json`,
+  extracted out of `report/render_json.py`'s private `_build_timeline`
+  so both the report renderer and the service layer share one
+  implementation. **No second temporal model**: identical
+  `NormalizedEvent`/`TimeAssertion` fields, identical sort key
+  (earliest known `TimeAssertion` value, or `created_at`), identical
+  ordering to before this module existed.
 
 **CLI refactor (§4's "where practical"):** `cli.main.entities_list` and
-`cli.main.relationships_list` now call `entities_service.list_entities`/
-`relationships_service.list_relationships` instead of duplicating
-`Store.list_entities()`/inline `--entity` filtering. This is safe because
-`SqliteStore.list_*` already returns rows `ORDER BY id`, so the service
-layer's own (redundant, harmless) re-sort produces byte-identical output
-to before. **Deliberately not refactored:** `entities_show`/
-`relationships_show` (already a single `store.get_*` call plus
-`model_dump_json()` — there is no duplicated logic to eliminate, and
-changing their output encoding to the service layer's canonical-JSON
-shape would be a real, untested-for behavior change to existing CLI
-output for zero benefit) and every `graph_app` command (their JSON
-branches already call the exact same `correlate.graph.*_to_json`
-functions the service layer calls — there is no second implementation to
-converge; their text-mode branches need the raw dataclass result, which
-the service layer intentionally does not expose, to avoid computing
-results twice per invocation). This is a narrower CLI refactor than a
-maximal reading of "where practical" might attempt, chosen specifically
-to avoid destabilizing the 34+ existing CLI integration tests for
-marginal benefit — see §7 for the honest accounting of this tradeoff.
+`cli.main.relationships_list` call the service layer instead of
+duplicating store access/filtering (safe: `SqliteStore.list_*` already
+returns rows `ORDER BY id`, so the service layer's own re-sort is
+byte-identical). **Deliberately not refactored:** `entities_show`/
+`relationships_show` (nothing to converge — already a single
+`store.get_*` call) and every `graph_app`/`gaps`/`contradictions`
+command (their JSON branches already call the exact same
+`correlate.*.*_to_json` functions the service layer calls; their text
+branches need the raw dataclass result, which the service layer
+intentionally does not expose, to avoid computing results twice per
+invocation). This is a narrower CLI refactor than a maximal reading of
+"where practical" might attempt, chosen to avoid destabilizing the
+existing CLI integration test suite for marginal benefit.
 
 ## 3. API (`src/witnessgraph/api/`)
 
-FastAPI app factory: `create_app(case_dir, *, allowed_origins=None)`
-(`api/app.py`). Binds to exactly one case directory, probed once at
-build time (fails fast, mirroring `_open_case_or_fail`) — `case_dir`
-is never a request parameter anywhere in this package. Launcher:
-`api/__main__.py`, exposed as the `witnessgraph-api` console script,
-which hardcodes `host="127.0.0.1"` (not a CLI flag — see
-`docs/phase-ui-v1-architecture-design.md` §11's "no accidental remote
-bind").
+FastAPI app factory: `create_app(case_dir, *, allowed_origins=None)`.
+Binds to exactly one case directory, probed once at build time (fails
+fast) — `case_dir` is never a request parameter anywhere in this
+package. Launcher: `api/__main__.py` (`witnessgraph-api` console
+script), hardcoding `host="127.0.0.1"` (not a CLI flag).
 
-Routes (`api/routes/*.py`), each a thin call into `witnessgraph.service`
-— never into `correlate`/`store` directly — with responses encoded via
-`api/responses.json_response`, which calls `core.ids.canonical_json_bytes`
-directly (the architecture §5's "simplest, zero new formatting code"
-option), so every JSON body's datetime formatting (UTC, `Z`-suffixed) is
-byte-identical to the CLI's own `--format json` output for the same
-underlying dict tree:
+Every route calls `witnessgraph.service`, never `correlate`/`store`
+directly, and returns `api/responses.json_response`'s
+`core.ids.canonical_json_bytes` encoding (byte-identical datetime
+formatting to the CLI's own `--format json`):
 
 | Endpoint | Notes |
 | --- | --- |
-| `GET /case` | Case overview (§2). |
+| `GET /case` | Case overview. |
 | `GET /entities`, `GET /entities/{id}` | Optional `entity_type` filter. |
-| `GET /relationships`, `GET /relationships/{id}` | Optional `entity_id`/`relationship_type` filters; single-object fetch always resolves `evidence_lineage`. |
-| `GET /evidence/{id}` | See §5 — new, small, deliberately justified. |
-| `GET /graph/neighbors`, `/graph/path`, `/graph/paths`, `/graph/components` | See the deviation in §5. |
-| `GET /contradictions` | Read-only, parameter-free; included because it needed no new contract. |
+| `GET /relationships`, `GET /relationships/{id}` | Optional `entity_id`/`relationship_type` filters; single fetch always resolves `evidence_lineage`. |
+| `GET /evidence` | List, optional `source_adapter` filter (second pass). |
+| `GET /evidence/{id}` | Resolve one reference; always 200, `kind` distinguishes `evidence_item`/`normalized_event`/`not_found`. |
+| `GET /graph/neighbors`, `/graph/path`, `/graph/paths`, `/graph/components` | Always explain-resolved — see §5. |
+| `GET /timeline` | Optional `event_type` filter (second pass). |
+| `GET /contradictions` | Read-only detection. |
+| `POST /contradictions/track` | Write: persist each detected contradiction (second pass). |
+| `GET /gaps` | Requires `min_gap_seconds`; optional `min_corroborating_events`, `refine_source_by_attribute` (second pass). |
+| `POST /gaps/track` | Write: same params, persists findings (second pass). |
+| `GET /findings`, `GET /findings/{id}` | Tracked gap findings, `still_reproduced` live-recomputed (second pass). |
+| `POST /findings/{id}/ack` | Write: `{status, by, note?}` body (`AckRequest`), requires non-blank `by` (second pass). |
+| `GET /contradiction-findings`, `GET /contradiction-findings/{id}` | Tracked contradictions (second pass). |
+| `POST /contradiction-findings/{id}/ack` | Write, same shape (second pass). |
 
-**Deviation from architecture §14 (documented, not silent): every graph
-endpoint always resolves explainability data** (`entities`,
-`evidence_lineage`, and — for `/graph/paths` — `evidence_independence`);
-there is no `?explain=` query parameter. The architecture's own §14
-table already decided this for `GET /relationships/{id}` ("the API has
-no reason to withhold it the way `--explain` opts in for a human-scale
-CLI listing") and explicitly generalized it to `GET /graph/paths`
-("always with explain resolved"). This implementation applies the same
-reasoning to `/graph/neighbors`, `/graph/path`, and `/graph/components`
-too: the CLI's `--explain` flag exists only to keep a human-scale
-*text* listing short by default, which has no equivalent for a machine
-JSON caller that would otherwise have to make a second round-trip for
-data it almost always wants. `witnessgraph.service.graph_service`'s
-functions still accept an `explain: bool` parameter, so the CLI keeps
-its existing opt-in exactly as before.
+**Reviewed per this milestone's explicit instruction: "every graph
+endpoint always resolves explainability data."** Verdict: **(A) appropriate
+and bounded — left unchanged.**
 
-**Error mapping** (`api/errors.py`): `EntityNotFoundError`/
-`RelationshipNotFoundError` → 404 with the CLI's own exact message text
-(`"no such entity: <id>"`); `ValidationError` → 400; a validation
-failure FastAPI itself catches (an out-of-range/mistyped query
-parameter Pydantic rejects before the service layer ever runs) → 422,
-Starlette's own convention — a real, minor deviation from the
-architecture's "a 400 for an invalid parameter" (§14), accepted because
-duplicating FastAPI's own request-parsing validation as hand-written
-400s would be exactly the kind of "competing implementation" this
-project avoids elsewhere; both are still unambiguously 4xx client
-errors, never a 500.
+- `neighbors`/`path`/`paths` are bounded by `max_depth`/`limit`, the
+  exact same bound the CLI itself enforces; explain adds only O(1)
+  lookups per already-bounded result element (an entity's resolved
+  type/identifiers, a relationship's resolved `derived_from` ids) — no
+  new order-of-growth cost, and no unbounded traversal is introduced.
+- `components` (no `max_depth`/`limit` — bounded only by `min_size` and
+  case size) is the one endpoint where a large, unfiltered case could
+  mean a large response. This is a **pre-existing** cost of calling
+  `/graph/components` with no `min_size` at all, not a new cost explain
+  introduces (explain is a linear multiplier on an already-unbounded
+  result, not a change in whether it's bounded) — and it is exactly the
+  concern architecture §16 already names and already assigns to the
+  *frontend* to mitigate: default to a bounded view, make "show
+  everything" an explicit, warned opt-in. The frontend does exactly
+  that (`GraphPanel`'s `FULL_GRAPH_WARNING_THRESHOLD`); no backend
+  change was made, and none is warranted — restoring a CLI-style
+  `?explain=` toggle here would only reintroduce a second round-trip
+  for data a JSON caller almost always wants, for a cost the frontend
+  already bounds at the point that actually matters.
+- Conclusion: the decision from the first implementation pass is
+  **retained as-is**, per this milestone's own instruction not to
+  "blindly restore the CLI's exact `--explain` semantics" without a
+  concrete reason.
 
-**Security** (see also `SECURITY.md`): binds to `127.0.0.1` only;
-CORS allows exactly the frontend dev server's origins
-(`http://127.0.0.1:5173`, `http://localhost:5173`) by default, never
-`*`; no route, query parameter, or request body accepts a filesystem
-path (verified by a test that inspects the generated OpenAPI schema for
-any parameter name containing "path"/"dir"/"file"); no SQL is ever
-written in `api/`; the one per-request `Case` is opened and closed by a
-FastAPI dependency (`api/deps.py`) exactly mirroring the CLI's own
-per-invocation lifecycle.
+**Error mapping** (`api/errors.py`): `*NotFoundError` → 404 with the
+CLI's own message text; `ValidationError` → 400; a validation failure
+FastAPI/Pydantic itself catches (bad query type, malformed `AckRequest`
+body, an invalid `FindingStatus` string) → 422, Starlette's own
+convention — never hand-duplicated as a second 400 implementation.
+
+**Security** (see also `SECURITY.md`): binds to `127.0.0.1` only; CORS
+allows exactly the frontend dev server's origins, never `*`; no route,
+query parameter, or request body accepts a filesystem path (verified by
+an OpenAPI-schema-inspecting test); no SQL is ever written in `api/`;
+one per-request `Case`, opened and closed by a FastAPI dependency.
 
 ## 4. Frontend (`frontend/`)
 
-Vite + React 19 + TypeScript, Cytoscape.js **without** the
-`react-cytoscapejs` wrapper package (a deliberate, documented deviation
-from architecture §13 — see §5). State/data-fetching: TanStack Query, as
-specified.
+Vite + React 19 + TypeScript, Cytoscape.js core (no `react-cytoscapejs`
+— see §5). TanStack Query for data-fetching/cache/mutation-invalidation.
 
 ```
 frontend/src/
-├── api/            # types.ts (mirrors the backend's JSON contracts), client.ts (fetch wrapper)
-├── graph/           # elements.ts (Entity/Relationship -> Cytoscape elements, §15's "no second graph model"),
-│                     # CytoscapeGraph.tsx (thin wrapper), stylesheet.ts, GraphPanel.tsx (mode/overlay orchestration)
-├── components/       # CaseHeader, EntityList/Detail, RelationshipList/Detail, Provenance (§8),
-│                     # EvidenceIndependencePanel (§7's critical UX), PathExplorer, ContradictionsPanel, ErrorScreen
-├── App.tsx           # top-level layout/state (selection, overlay)
-└── main.tsx          # QueryClientProvider
+├── api/          # types.ts (mirrors backend JSON contracts), client.ts (fetch wrapper)
+├── graph/        # elements.ts (Entity/Relationship/GraphComponent -> Cytoscape elements),
+│                 # CytoscapeGraph.tsx (thin wrapper), stylesheet.ts, GraphPanel.tsx (mode/overlay orchestration)
+├── components/   # CaseHeader, EntityList/Detail, RelationshipList/Detail, Provenance,
+│                 # EvidenceIndependencePanel, PathExplorer, ComponentsPanel, EvidencePanel,
+│                 # TimelinePanel, ContradictionsPanel, GapsPanel, FindingsPanel, ErrorScreen
+├── App.tsx       # top-level nav + Graph-workspace state (selection, overlay, component focus)
+└── main.tsx      # QueryClientProvider
 ```
 
-**Case opening/startup flow (Phase C item 1):** there is no in-UI case
-picker — the architecture deliberately binds one server process to one
-case directory at startup (§11), so there is nothing to pick. On load,
-the UI calls `GET /case`; if that fails (server not running yet, or
-unreachable), `ErrorScreen` renders with the exact command to start the
-backend (`witnessgraph-api path/to/case-directory`) and the API base URL
-it is trying to reach — never a generic "something went wrong."
+**Information architecture:** a persistent case-overview header (always
+visible — counts + manifest verdict, refreshed after every tracking/ack
+mutation) plus a top-level nav: **Graph** (default; sidebar tabs
+Entities/Relationships/Components), **Evidence**, **Timeline**,
+**Contradictions**, **Gaps**, **Findings** — matching the architecture's
+domain-organized structure, not the CLI's command list. The graph
+remains the single central workspace; every other view is a focused,
+single-purpose structured-data screen, never a decorative dashboard.
 
-**Graph view:** starts in "full case graph" mode (built directly from
-the already-fetched entity/relationship lists — no extra request) for
-cases at or below a small entity-count threshold; above it, "show the
-whole graph" becomes an explicit, warned opt-in exactly as §16
-specifies. Selecting a node switches to a bounded "ego network" mode
-(`GET /graph/neighbors`, adjustable depth). Layout is deterministic —
-`grid` (elements pre-sorted by id) for the full graph, `breadthfirst`
-rooted at the selected entity for ego/path views — never a
-force-directed layout, per §7's explicit caution.
+**Graph view:** "full case graph" (built directly from the
+already-fetched entity/relationship lists) below a small entity-count
+threshold, else a bounded "ego network" (`GET /graph/neighbors`) by
+default with "show the whole graph" as an explicit, warned opt-in
+(§16). A third mode, **component focus** — selecting a row in the new
+Components sidebar tab renders exactly that `GraphComponent`'s own
+entities/relationships (`graph/elements.ts::componentElements`, zero
+recomputation) — coexists with path-overlay mode; selecting one clears
+the other. Useful empty states throughout ("select an entity to explore
+its neighborhood", "nothing to render — no entities yet"). Layout is
+always deterministic: `grid` (pre-sorted by id) for the full graph,
+`breadthfirst` for ego/path/component views — never force-directed.
 
-**Path / tied-shortest-paths (Phase C items 7–8):** `PathExplorer` runs
-`GET /graph/path` or `GET /graph/paths` and hands the returned chain(s)
-to `GraphPanel` as an "analytical overlay," rendered with one distinct
-color per chain (`graph/elements.ts::pathOverlayElements`) and a
-`.wg-selected` styling reserved for whatever is open in the detail
-panel — kept visually and semantically distinct from the overlay
-classes, per §7's "clear distinction between the selected graph context
-and analytical overlays." An edge shared by two chains gets both chain
-classes, a visible signal rather than an arbitrarily-chosen single
-color.
+**Path / tied-shortest-paths:** unchanged from the first pass —
+`PathExplorer` renders `GET /graph/path`/`/graph/paths` results as a
+per-chain-colored overlay on the graph canvas, with an explicit "clear
+overlay" action distinct from "clear component focus".
 
-**Evidence independence (Phase C item 9, the critical one):**
-`EvidenceIndependencePanel` renders exactly two separate, labeled
-sentences — "Structural fact: N structurally distinct chain(s)..." and
-"Evidence fact (a separate question): evidence-independent:
-yes/no/not applicable..." — never merged, never using "proof",
-"corroboration", or "confirms." A `null` `fully_evidence_independent`
-(fewer than 2 chains) renders as "not applicable," never coerced to
-`true`. Covered by a dedicated test asserting the phrase "independently
-corroborated" never appears in the rendered output.
+**Evidence independence (the critical interaction):**
+`EvidenceIndependencePanel` renders the structural fact ("N
+structurally distinct chains…") and the evidence fact
+("evidence-independent: yes/no/not applicable…") as two separate,
+labeled sentences — never merged, never "proof"/"corroboration"/
+"confirms", never coercing a `null` verdict to `true`. Verified in this
+pass both by the existing component tests and by a real, live
+end-to-end demo against a synthetic diamond-shaped case with
+deliberately shared evidence (see §7).
 
-**Provenance UX (Phase C item 6, §8):** `components/Provenance.tsx`
-implements the "expandable inline disclosure, not a separate page"
-mechanism for both a relationship's already-resolved `evidence_lineage`
-and an entity's own `derived_from` ids (resolved on demand via
-`GET /evidence/{id}` — see §5). No separate Evidence-browse page exists
-(deferred — see §6).
+**Provenance UX:** unchanged mechanism (`components/Provenance.tsx`,
+expandable inline disclosure) — extended targets: an Evidence-browse row
+(§ new in this pass) and a Timeline entry's time assertions.
+
+**Evidence browsing (`EvidencePanel`, new):** a filterable table of
+every EvidenceItem's metadata (id, source_adapter, source_locator,
+collected_at, raw_size_bytes) — content-addressed identifiers and
+recorded locator strings only; no raw blob content is ever fetched or
+rendered, and no code path in this view reads a file from disk (the
+`source_locator` string is metadata the engine already recorded at
+ingest time, exactly as the CLI's own `report`/`--explain` output
+already displays it).
+
+**Timeline (`TimelinePanel`, new):** `GET /timeline`'s structured JSON
+only, ordered exactly as the engine orders it. Each event expands to
+show every `TimeAssertion` about it, with explicit copy pointing to
+Contradictions for events where those assertions disagree. No parsing
+of `timeline`'s CLI text output anywhere — the CLI and the UI share the
+same structured source.
+
+**Contradictions (`ContradictionsPanel`, extended):** detected
+contradictions plus the one write action, "track as findings"
+(`POST /contradictions/track`), reported as `{new, already_tracked}`.
+Never renders either assertion as "the truth"; tracking is described
+as "persisting with a stable id for review", never "resolving".
+
+**Gaps (`GapsPanel`, new):** a form for the engine's own
+required/optional parameters (`min_gap_seconds` has no default the
+engine claims is objectively correct, so none is silently chosen),
+"Analyze", and — only once an analysis found something — "Track
+findings". Copy is exact and tested: a finding is rendered as "no
+evidence from `<source>` … while `<source>` has corroborating
+activity", **never** "the event did not happen" or "never happened".
+
+**Findings (`FindingsPanel`, new):** two sections — tracked gap
+findings (with the live `still_reproduced` indicator) and tracked
+contradiction findings (deliberately without one — see
+`TrackedTimeContradiction`'s own docstring) — each with an
+acknowledgement form (status/by/note). The status `<select>` only ever
+offers `open`/`reviewed`/`dismissed`; there is no `validated`/
+`confirmed` option anywhere in this codebase, frontend included.
 
 ## 5. Deliberate deviations / extensions, and why
 
-1. **No `react-cytoscapejs`.** Cytoscape.js core is used directly via a
-   ~40-line React wrapper (`graph/CytoscapeGraph.tsx`, a `useRef`+
-   `useEffect` pair). One fewer dependency, avoids that wrapper
-   package's own React-18/19 compatibility surface, and keeps full,
-   direct control over layout determinism. The architecture's actual
-   requirement — Cytoscape.js for the interaction model — is met in
-   full; only the specific wrapper package named in §13 is not used.
-2. **Every graph endpoint always resolves explainability data** (no
-   `?explain=` toggle in the API) — see §3. A generalization of a
-   decision the architecture itself already made for two of the five
-   graph-shaped endpoints, applied consistently to the rest, not a new
-   design decision.
-3. **`GET /evidence/{id}`** (`evidence_service.resolve_evidence`) is a
-   small, deliberate slice of architecture §5 gap #3 ("Evidence item /
-   NormalizedEvent, standalone") — not the full standalone Evidence
-   *browse* view (deferred, §6), but the one lookup the Entity detail
-   panel's own provenance disclosure requires to resolve an
-   `Entity.derived_from` id, exactly the way a relationship's
-   `evidence_lineage` already resolves `Relationship.derived_from`.
-   Built via the engine's own existing `resolve_evidence_ref`, not new
-   logic. Always returns 200 (`kind: "not_found"` is data, not a 404 —
-   consistent with how the engine's own `--explain` machinery treats a
-   dangling reference as a reportable fact, never an error).
-4. **422 vs. 400 for FastAPI's own parameter validation** — see §3.
+1. **No `react-cytoscapejs`.** Cytoscape.js core via a small React
+   wrapper (`graph/CytoscapeGraph.tsx`). One fewer dependency, no
+   wrapper-package React-19 compatibility surface, full control over
+   layout determinism. The architecture's actual requirement
+   (Cytoscape.js's interaction model) is met in full.
+2. **Every graph endpoint always resolves explainability data** — see
+   §3's review. Retained after explicit re-examination this pass, not
+   merely carried over unexamined.
+3. **`GET /evidence/{id}` always returns 200** (`kind: "not_found"` is
+   data, not a 404) — a dangling reference is a real, documented engine
+   possibility, reported the same way `--explain` reports it, never
+   raised as an error.
+4. **422 (not 400) for FastAPI/Pydantic's own request-shape validation**
+   (bad query type, malformed `AckRequest` body) — every
+   *application-level* validation (entity/relationship existence,
+   `max_depth`/`limit`/`min_gap_seconds` bounds, non-blank `by`) still
+   maps to the CLI's own 404/400 distinction exactly.
+5. **`POST /gaps/track` and `POST /contradictions/track` take query
+   parameters, not a JSON body** — consistent with `GET /gaps` using
+   the same parameter set, and avoids a body schema for what is
+   structurally identical to the GET's own filter parameters.
 
-## 6. Genuinely deferred (not built this pass)
+## 6. Genuinely deferred (not built)
 
-Per the mission's explicit DEFERRED list plus a few architecture SHOULD-
-HAVEs judged not required for a first honest vertical slice:
+Per the mission's explicit DEFERRED list plus items judged out of scope
+for a UI whose job is to expose the *existing* engine, not extend it:
 
 - Hypotheses view, embedded Report view, UI-driven export/import,
-  multi-case switching (all explicitly deferred by the mission).
-- Standalone Evidence *browse* view (list/filter/search across all
-  EvidenceItems) — architecture §5 gap #3's full form; only the
-  single-id resolution needed for provenance disclosure was built (§5).
-- Timeline view — blocked on architecture §5 gap #4 (no `TimeAssertion`
-  list/show, no `timeline --format json`); not built because nothing in
-  the MUST-HAVE slice required it, and inventing a timeline JSON
-  contract "to make the UI easier" is explicitly against the mission's
-  instructions.
-- Gaps view / `POST /gaps` — `find_gaps` requires an explicit, no-default
-  `min_gap_seconds` the architecture itself says has no objectively
-  correct value; wiring it into the UI means designing a parameter-input
-  UX for it, which is real, separate work, not a thin passthrough.
-- Findings view + the ack/annotate workflow — the one write operation in
-  the whole architecture (§10/§11); the read-only structural views
-  already demonstrate the engine's identity without it.
-- `POST /verify`, `/report` — architecture §5 gap #5 and an existing,
-  already-complete CLI/document feature respectively; low priority per
-  §17's own SHOULD-HAVE/DEFERRED split.
-- CLI refactor of `graph_app`'s commands and `entities_show`/
-  `relationships_show` — see §2's explicit reasoning.
+  multi-case switching (explicitly deferred by both milestones).
+- `POST /verify` / a `ReplayResult` JSON contract (architecture §5 gap
+  #5) — low priority; the CLI's `verify`/`replay` already cover it.
+- CLI refactor of `graph_app`/`gaps`/`contradictions` commands and
+  `entities_show`/`relationships_show` — see §2's explicit reasoning.
+- A history/audit trail for finding/contradiction acknowledgements —
+  the engine itself has none (`annotate_tracked_*` replaces, never
+  appends); the UI does not invent one.
 
-## 7. Honest limitations
+## 7. Manual end-to-end verification
 
-- The frontend's production bundle is ~715 KB (mostly Cytoscape.js),
+Performed against a live `witnessgraph-api` server (not just unit/
+component tests) using the existing `examples/sample-case` pipeline,
+extended with one synthetic second host to form a diamond
+(`user → host-A → ip`, `user → host-B → ip`, both paths' relationships
+citing the *same* EvidenceItem) and one deliberately conflicting
+second `TimeAssertion` on the case's `logon` event:
+
+1. Started `witnessgraph-api` bound to the case; started the frontend
+   dev server; opened it in a real browser.
+2. Overview header showed correct counts and `MATCH` manifest verdict.
+3. Graph view: selected an entity (opened its detail panel with
+   expandable provenance resolving to a real `EvidenceItem`), selected
+   a relationship (its evidence-lineage disclosure), ran `graph path`
+   and `graph paths`.
+4. `graph paths` returned 2 structurally distinct chains, rendered as
+   two distinctly colored overlays; the Evidence Independence panel
+   correctly reported "evidence-independent: no — 1 EvidenceItem cited
+   by more than one chain", with the shared id shown.
+5. Components tab: one component (4 entities), clicking it focused
+   exactly that cluster in the graph canvas via `breadthfirst` layout.
+6. Evidence tab: all 9 ingested EvidenceItems listed with real
+   source_adapter/source_locator/collected_at, filterable.
+7. Timeline tab: 9 events in time order; expanding the `logon` event
+   showed both disagreeing TimeAssertions.
+8. Contradictions tab: the same disagreement detected and displayed;
+   clicked "Track as findings" → `{new: 1, already_tracked: 0}`; the
+   header's "Tracked contradictions" count updated live from 0 to 1
+   without a page reload (a real staleness bug caught and fixed during
+   this verification — see the git history for the fix).
+9. Findings tab: the tracked contradiction appeared; entered an analyst
+   identity and submitted an acknowledgement → status changed to
+   "reviewed (by demo-analyst)" in place.
+10. Gaps tab: ran an analysis against the case's real (undeclared-source)
+    evidence; got the honest "no coverage gaps found at this threshold"
+    result plus real exclusion counts — not a fabricated result.
+11. Checked the browser console throughout: no errors.
+
+## 8. Honest limitations
+
+- The frontend's production bundle is ~730 KB (mostly Cytoscape.js),
   above Vite's default 500 KB warning threshold. Not addressed with
-  code-splitting in this pass — a local, single-analyst desktop-style
-  tool has no CDN transfer-budget pressure comparable to a public
-  website, and adding `import()`-based splitting purely to silence a
-  build warning would be complexity added for its own sake.
-- The evidence-independence and provenance panels are exercised by
-  targeted unit/component tests (backend and frontend) and by manual,
-  real end-to-end verification (a live `witnessgraph-api` server against
-  a synthetic diamond-shaped case, driven through an actual browser —
-  see the milestone report's demo section), not by a browser-automation
-  test suite committed to the repository. Vitest + Testing Library
-  cover component-level state transitions; there is no Playwright/
-  Cypress harness in this pass.
+  code-splitting — a local, single-analyst desktop-style tool has no
+  CDN transfer-budget pressure comparable to a public website.
+- Automated end-to-end coverage is Vitest + Testing Library at the
+  component level (35 tests) plus the manual, real-browser verification
+  in §7 — there is no committed Playwright/Cypress browser-automation
+  suite.
 - This UI does not, and cannot, prove evidence independence in an
   epistemic sense — it renders exactly the structural and provenance
-  facts the engine computes, nothing more. See the researcher-demo
-  script's own closing line (architecture §19 step 9); this
-  implementation does not weaken that boundary anywhere.
+  facts the engine computes, nothing more. It does not replace
+  acquisition or artifact-analysis suites; its contribution is making
+  evidence-backed relationships and reasoning explicit, traceable,
+  reproducible, and machine-queryable — see the architecture's own
+  researcher-demo closing line (§19 step 9), which this implementation
+  does not weaken anywhere.
