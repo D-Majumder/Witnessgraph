@@ -270,6 +270,257 @@ def test_path_direction_both_finds_reverse_edge(tmp_path: Path) -> None:
     assert "path found: 2 hop" in result.stdout
 
 
+# -- paths (all shortest chains) -----------------------------------------------
+
+
+def _make_diamond_case(tmp_path: Path) -> Path:
+    """A->B->D and A->C->D (two tied 2-hop chains), plus a longer 3-hop
+    detour A->X->Y->D that must never be reported as "shortest"."""
+    b = _CaseBuilder(tmp_path / "case")
+    b.edge("A", "B")
+    b.edge("B", "D")
+    b.edge("A", "C")
+    b.edge("C", "D")
+    b.edge("A", "X")
+    b.edge("X", "Y")
+    b.edge("Y", "D")
+    b.finish()
+    return b.case_dir
+
+
+def test_paths_finds_direct_edge(tmp_path: Path) -> None:
+    case_dir = _make_chain_case(tmp_path)
+    result = runner.invoke(app, ["graph", "paths", str(case_dir), "entity-A", "entity-B"])
+    assert result.exit_code == 0
+    assert "1 shortest chain(s) found: 1 hop" in result.stdout
+
+
+def test_paths_finds_every_tied_shortest_chain(tmp_path: Path) -> None:
+    case_dir = _make_diamond_case(tmp_path)
+    result = runner.invoke(app, ["graph", "paths", str(case_dir), "entity-A", "entity-D"])
+    assert result.exit_code == 0
+    assert "2 shortest chain(s) found: 2 hop(s) each" in result.stdout
+    assert "chain 1:" in result.stdout
+    assert "chain 2:" in result.stdout
+    assert "entity-X" not in result.stdout  # the longer detour is excluded
+
+
+def test_paths_no_path_is_clean_not_an_error(tmp_path: Path) -> None:
+    case_dir = _make_chain_case(tmp_path)
+    result = runner.invoke(app, ["graph", "paths", str(case_dir), "entity-A", "entity-D"])
+    assert result.exit_code == 0
+    assert "no path found" in result.stdout
+
+
+def test_paths_same_source_and_target(tmp_path: Path) -> None:
+    case_dir = _make_chain_case(tmp_path)
+    result = runner.invoke(app, ["graph", "paths", str(case_dir), "entity-A", "entity-A"])
+    assert result.exit_code == 0
+    assert "0 hop" in result.stdout
+
+
+def test_paths_unknown_source_entity_fails_cleanly(tmp_path: Path) -> None:
+    case_dir = _make_chain_case(tmp_path)
+    result = runner.invoke(app, ["graph", "paths", str(case_dir), "no-such-entity", "entity-B"])
+    assert result.exit_code != 0
+    assert "no such entity" in _flatten(result.stderr)
+
+
+def test_paths_unknown_target_entity_fails_cleanly(tmp_path: Path) -> None:
+    case_dir = _make_chain_case(tmp_path)
+    result = runner.invoke(app, ["graph", "paths", str(case_dir), "entity-A", "no-such-entity"])
+    assert result.exit_code != 0
+    assert "no such entity" in _flatten(result.stderr)
+
+
+def test_paths_beyond_max_depth_reports_no_path(tmp_path: Path) -> None:
+    case_dir = _make_chain_case(tmp_path)
+    result = runner.invoke(
+        app, ["graph", "paths", str(case_dir), "entity-A", "entity-C", "--max-depth", "1"]
+    )
+    assert result.exit_code == 0
+    assert "no path found" in result.stdout
+
+
+def test_paths_rejects_invalid_max_depth(tmp_path: Path) -> None:
+    case_dir = _make_chain_case(tmp_path)
+    result = runner.invoke(
+        app, ["graph", "paths", str(case_dir), "entity-A", "entity-B", "--max-depth", "0"]
+    )
+    assert result.exit_code != 0
+    assert "--max-depth" in _flatten(result.stderr)
+
+
+def test_paths_rejects_bad_format(tmp_path: Path) -> None:
+    case_dir = _make_diamond_case(tmp_path)
+    result = runner.invoke(
+        app, ["graph", "paths", str(case_dir), "entity-A", "entity-D", "--format", "xml"]
+    )
+    assert result.exit_code != 0
+
+
+def test_paths_rejects_invalid_limit(tmp_path: Path) -> None:
+    case_dir = _make_diamond_case(tmp_path)
+    result = runner.invoke(
+        app, ["graph", "paths", str(case_dir), "entity-A", "entity-D", "--limit", "0"]
+    )
+    assert result.exit_code != 0
+    assert "--limit" in _flatten(result.stderr)
+
+
+def test_paths_rejects_excessive_limit(tmp_path: Path) -> None:
+    case_dir = _make_diamond_case(tmp_path)
+    result = runner.invoke(
+        app, ["graph", "paths", str(case_dir), "entity-A", "entity-D", "--limit", "99999"]
+    )
+    assert result.exit_code != 0
+
+
+def test_paths_limit_truncates_and_reports_it(tmp_path: Path) -> None:
+    case_dir = _make_diamond_case(tmp_path)
+    result = runner.invoke(
+        app, ["graph", "paths", str(case_dir), "entity-A", "entity-D", "--limit", "1"]
+    )
+    assert result.exit_code == 0
+    assert "1 shortest chain(s) found: 2 hop(s) each (more exist beyond --limit)" in result.stdout
+
+
+def test_paths_direction_both_finds_reverse_edge(tmp_path: Path) -> None:
+    case_dir = _make_chain_case(tmp_path)
+    result = runner.invoke(
+        app, ["graph", "paths", str(case_dir), "entity-C", "entity-A", "--direction", "both"]
+    )
+    assert result.exit_code == 0
+    assert "1 shortest chain(s) found: 2 hop(s) each" in result.stdout
+
+
+def test_paths_json_output_shape_and_determinism(tmp_path: Path) -> None:
+    case_dir = _make_diamond_case(tmp_path)
+    args = ["graph", "paths", str(case_dir), "entity-A", "entity-D", "--format", "json"]
+    first = runner.invoke(app, args)
+    second = runner.invoke(app, args)
+    assert first.exit_code == 0
+    doc = json.loads(first.stdout)
+    assert doc["found"] is True
+    assert doc["hop_count"] == 2
+    assert doc["truncated"] is False
+    assert doc["limit"] == 10
+    assert len(doc["paths"]) == 2
+    assert doc["paths"][0][0]["relationship"]["derived_from"]
+    assert first.stdout == second.stdout  # deterministic
+
+
+def test_paths_json_no_path_represented_as_data_not_exception(tmp_path: Path) -> None:
+    case_dir = _make_chain_case(tmp_path)
+    result = runner.invoke(
+        app, ["graph", "paths", str(case_dir), "entity-A", "entity-D", "--format", "json"]
+    )
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert doc["found"] is False
+    assert doc["hop_count"] is None
+    assert doc["paths"] == []
+    assert doc["truncated"] is False
+
+
+def test_paths_json_limit_and_truncated_are_reported(tmp_path: Path) -> None:
+    case_dir = _make_diamond_case(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            "graph",
+            "paths",
+            str(case_dir),
+            "entity-A",
+            "entity-D",
+            "--limit",
+            "1",
+            "--format",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert doc["limit"] == 1
+    assert doc["truncated"] is True
+    assert len(doc["paths"]) == 1
+
+
+def test_paths_explain_text_shows_evidence_and_entities(tmp_path: Path) -> None:
+    case_dir = _make_diamond_case(tmp_path)
+    result = runner.invoke(
+        app, ["graph", "paths", str(case_dir), "entity-A", "entity-D", "--explain"]
+    )
+    assert result.exit_code == 0
+    assert "evidence:" in result.stdout
+    assert "evidence_item" in result.stdout
+    assert "entities:" in result.stdout
+    assert "entity-A" in result.stdout
+    assert "entity-D" in result.stdout
+
+
+def test_paths_explain_json_has_full_lineage(tmp_path: Path) -> None:
+    case_dir = _make_diamond_case(tmp_path)
+    result = runner.invoke(
+        app,
+        ["graph", "paths", str(case_dir), "entity-A", "entity-D", "--explain", "--format", "json"],
+    )
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert "entities" in doc
+    assert "entity-A" in doc["entities"]
+    first_rel = doc["paths"][0][0]["relationship"]
+    assert "evidence_lineage" in first_rel
+    assert first_rel["evidence_lineage"][0]["kind"] == "evidence_item"
+
+
+def test_paths_explain_no_path_still_clean_no_lineage_needed(tmp_path: Path) -> None:
+    case_dir = _make_chain_case(tmp_path)
+    result = runner.invoke(
+        app, ["graph", "paths", str(case_dir), "entity-A", "entity-D", "--explain"]
+    )
+    assert result.exit_code == 0
+    assert "no path found" in result.stdout
+
+
+def test_paths_cycle_does_not_hang_the_cli(tmp_path: Path) -> None:
+    b = _CaseBuilder(tmp_path / "case")
+    b.edge("A", "B")
+    b.edge("B", "C")
+    b.edge("C", "A")
+    b.finish()
+    result = runner.invoke(
+        app, ["graph", "paths", str(b.case_dir), "entity-A", "entity-C", "--max-depth", "10"]
+    )
+    assert result.exit_code == 0
+    assert "1 shortest chain(s) found: 2 hop(s) each" in result.stdout
+
+
+def test_paths_deterministic_across_repeated_cli_calls(tmp_path: Path) -> None:
+    case_dir = _make_diamond_case(tmp_path)
+    args = ["graph", "paths", str(case_dir), "entity-A", "entity-D"]
+    first = runner.invoke(app, args)
+    second = runner.invoke(app, args)
+    assert first.stdout == second.stdout
+
+
+def test_paths_missing_case_fails_cleanly(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app, ["graph", "paths", str(tmp_path / "nope"), "entity-A", "entity-B"]
+    )
+    assert result.exit_code != 0
+
+
+def test_paths_works_on_a_case_predating_relationships(tmp_path: Path) -> None:
+    b = _CaseBuilder(tmp_path / "case")
+    b.entity("A")
+    b.entity("B")
+    b.finish()
+    result = runner.invoke(app, ["graph", "paths", str(b.case_dir), "entity-A", "entity-B"])
+    assert result.exit_code == 0
+    assert "no path found" in result.stdout
+
+
 # -- cycles / branching (CLI-level smoke; algorithmic depth covered in
 #    tests/unit/test_graph.py) -----------------------------------------------
 

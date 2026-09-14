@@ -21,10 +21,14 @@ from witnessgraph.core.relationships import Relationship
 from witnessgraph.correlate.graph import (
     DEFAULT_NEIGHBORS_MAX_DEPTH,
     DEFAULT_PATH_MAX_DEPTH,
+    DEFAULT_PATHS_LIMIT,
     MAX_ALLOWED_DEPTH,
+    MAX_ALLOWED_PATHS_LIMIT,
     GraphDirection,
+    all_shortest_paths_result_to_json,
     components_result_to_json,
     explain_relationship,
+    find_all_shortest_paths,
     find_components,
     find_neighbors,
     find_path,
@@ -310,6 +314,271 @@ def test_path_rejects_invalid_depth(graph: _Graph) -> None:
         find_path(
             graph.case.store, graph.entity("A"), graph.entity("B"), max_depth=MAX_ALLOWED_DEPTH + 1
         )
+
+
+# -- find_all_shortest_paths --------------------------------------------------
+
+
+def test_all_shortest_paths_trivial_source_equals_target(graph: _Graph) -> None:
+    a = graph.entity("A")
+    result = find_all_shortest_paths(graph.case.store, a, a)
+    assert result.found
+    assert result.hop_count == 0
+    assert result.paths == ((),)
+    assert not result.truncated
+
+
+def test_all_shortest_paths_single_direct_edge(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    result = find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("B"))
+    assert result.found
+    assert result.hop_count == 1
+    assert len(result.paths) == 1
+    assert not result.truncated
+    (chain,) = result.paths
+    assert len(chain) == 1
+    assert chain[0].from_entity_id == graph.entity("A")
+    assert chain[0].to_entity_id == graph.entity("B")
+
+
+def test_all_shortest_paths_finds_every_tied_shortest_chain(graph: _Graph) -> None:
+    """Diamond A->B->D and A->C->D: both 2-hop chains are reported. A
+    3-hop detour A->X->Y->D exists too but must never appear -- only
+    chains tied for the *minimum* hop count are shortest paths."""
+    graph.edge("A", "B")
+    graph.edge("B", "D")
+    graph.edge("A", "C")
+    graph.edge("C", "D")
+    graph.edge("A", "X")
+    graph.edge("X", "Y")
+    graph.edge("Y", "D")
+    result = find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("D"))
+    assert result.found
+    assert result.hop_count == 2
+    assert not result.truncated
+    assert len(result.paths) == 2
+    midpoints = {chain[0].to_entity_id for chain in result.paths}
+    assert midpoints == {graph.entity("B"), graph.entity("C")}
+    for chain in result.paths:
+        assert len(chain) == 2
+        assert chain[-1].to_entity_id == graph.entity("D")
+
+
+def test_all_shortest_paths_deterministic_ordering(graph: _Graph) -> None:
+    """Three parallel 1-hop midpoints (A->{B,C,D}->E) must always be
+    reported in ascending entity-id order, never storage/insertion order."""
+    graph.edge("A", "D")
+    graph.edge("D", "E")
+    graph.edge("A", "B")
+    graph.edge("B", "E")
+    graph.edge("A", "C")
+    graph.edge("C", "E")
+    result = find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("E"))
+    midpoints = [chain[0].to_entity_id for chain in result.paths]
+    assert midpoints == sorted(midpoints)
+    assert midpoints == [graph.entity("B"), graph.entity("C"), graph.entity("D")]
+    # Re-running against unchanged data reproduces the exact same order.
+    again = find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("E"))
+    assert [chain[0].to_entity_id for chain in again.paths] == midpoints
+
+
+def test_all_shortest_paths_parallel_relationships_are_both_reported(graph: _Graph) -> None:
+    """Two distinct Relationships between the same pair of entities (e.g.
+    two different pieces of evidence for the same connection) are two
+    distinct shortest chains, not merged into one."""
+    second_evidence = EvidenceItem.create(
+        raw_bytes=b"second",
+        source_adapter="test",
+        adapter_version="0.0.0",
+        source_locator="test:2",
+        collected_at=NOW,
+    )
+    graph.case.store.put_evidence(second_evidence)
+    r1 = graph.edge_with_derived_from("A", "B", (graph.evidence_id,))
+    r2 = graph.edge_with_derived_from("A", "B", (second_evidence.id,))
+    result = find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("B"))
+    assert result.hop_count == 1
+    assert len(result.paths) == 2
+    found_rel_ids = {chain[0].relationship.id for chain in result.paths}
+    assert found_rel_ids == {r1.id, r2.id}
+
+
+def test_all_shortest_paths_truncates_at_limit_and_reports_it(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    graph.edge("B", "D")
+    graph.edge("A", "C")
+    graph.edge("C", "D")
+    result = find_all_shortest_paths(
+        graph.case.store, graph.entity("A"), graph.entity("D"), limit=1
+    )
+    assert result.found
+    assert result.hop_count == 2
+    assert len(result.paths) == 1
+    assert result.truncated
+
+
+def test_all_shortest_paths_not_truncated_when_exactly_at_limit(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    graph.edge("B", "D")
+    graph.edge("A", "C")
+    graph.edge("C", "D")
+    result = find_all_shortest_paths(
+        graph.case.store, graph.entity("A"), graph.entity("D"), limit=2
+    )
+    assert len(result.paths) == 2
+    assert not result.truncated
+
+
+def test_all_shortest_paths_not_found_between_disconnected_entities(graph: _Graph) -> None:
+    graph.entity("A")
+    graph.entity("B")
+    result = find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("B"))
+    assert not result.found
+    assert result.hop_count is None
+    assert result.paths == ()
+    assert not result.truncated
+
+
+def test_all_shortest_paths_not_found_against_relationship_direction(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    result = find_all_shortest_paths(graph.case.store, graph.entity("B"), graph.entity("A"))
+    assert not result.found
+
+
+def test_all_shortest_paths_direction_in_follows_edges_backward(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    result = find_all_shortest_paths(
+        graph.case.store, graph.entity("B"), graph.entity("A"), direction=GraphDirection.IN
+    )
+    assert result.found
+    assert len(result.paths) == 1
+    assert result.paths[0][0].walked_direction == "backward"
+    assert result.paths[0][0].relationship.source_entity_id == graph.entity("A")
+
+
+def test_all_shortest_paths_direction_both_finds_diamond_ignoring_arrow(graph: _Graph) -> None:
+    """A->B->D and C->B (note: C points *into* B, not out of it) plus
+    C->D: under direction=both, both 2-hop chains from A to D are found
+    even though the A-side and C-side edges don't share an arrow sense."""
+    graph.edge("A", "B")
+    graph.edge("B", "D")
+    result = find_all_shortest_paths(
+        graph.case.store, graph.entity("A"), graph.entity("D"), direction=GraphDirection.BOTH
+    )
+    assert result.found
+    assert result.hop_count == 2
+    assert len(result.paths) == 1
+
+
+def test_all_shortest_paths_not_found_beyond_max_depth(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    graph.edge("B", "C")
+    graph.edge("C", "D")
+    result = find_all_shortest_paths(
+        graph.case.store, graph.entity("A"), graph.entity("D"), max_depth=2
+    )
+    assert not result.found
+
+
+def test_all_shortest_paths_found_exactly_at_max_depth(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    graph.edge("B", "C")
+    result = find_all_shortest_paths(
+        graph.case.store, graph.entity("A"), graph.entity("C"), max_depth=2
+    )
+    assert result.found
+    assert result.hop_count == 2
+
+
+def test_all_shortest_paths_default_constants(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    result = find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("B"))
+    assert result.max_depth == DEFAULT_PATH_MAX_DEPTH
+    assert result.limit == DEFAULT_PATHS_LIMIT
+
+
+def test_all_shortest_paths_rejects_invalid_depth(graph: _Graph) -> None:
+    with pytest.raises(ValueError, match="max_depth"):
+        find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("B"), max_depth=0)
+    with pytest.raises(ValueError, match="max_depth"):
+        find_all_shortest_paths(
+            graph.case.store,
+            graph.entity("A"),
+            graph.entity("B"),
+            max_depth=MAX_ALLOWED_DEPTH + 1,
+        )
+
+
+def test_all_shortest_paths_rejects_invalid_limit(graph: _Graph) -> None:
+    with pytest.raises(ValueError, match="limit"):
+        find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("B"), limit=0)
+    with pytest.raises(ValueError, match="limit"):
+        find_all_shortest_paths(
+            graph.case.store,
+            graph.entity("A"),
+            graph.entity("B"),
+            limit=MAX_ALLOWED_PATHS_LIMIT + 1,
+        )
+
+
+def test_all_shortest_paths_terminates_on_a_cycle(graph: _Graph) -> None:
+    """A -> B -> C -> A: a shortest path from A to C (2 hops via B) must
+    still be found, and the pruned shortest-path DAG must never include
+    the C -> A back-edge (it is not on any shortest A -> C chain)."""
+    graph.edge("A", "B")
+    graph.edge("B", "C")
+    graph.edge("C", "A")
+    result = find_all_shortest_paths(
+        graph.case.store, graph.entity("A"), graph.entity("C"), max_depth=10
+    )
+    assert result.found
+    assert result.hop_count == 2
+    assert len(result.paths) == 1
+
+
+def test_all_shortest_paths_on_empty_graph_is_not_found(tmp_path: Path) -> None:
+    case = Case.create(tmp_path / "case")
+    result = find_all_shortest_paths(case.store, "no-such-a", "no-such-b")
+    assert not result.found
+    case.close()
+
+
+def test_all_shortest_paths_provenance_every_step_has_derived_from(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    graph.edge("B", "C")
+    result = find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("C"))
+    for chain in result.paths:
+        for step in chain:
+            assert len(step.relationship.derived_from) > 0
+
+
+def test_all_shortest_paths_to_json_structure(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    graph.edge("B", "D")
+    graph.edge("A", "C")
+    graph.edge("C", "D")
+    result = find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("D"))
+    doc = all_shortest_paths_result_to_json(result)
+    assert doc["found"] is True
+    assert doc["hop_count"] == 2
+    assert doc["truncated"] is False
+    assert doc["limit"] == DEFAULT_PATHS_LIMIT
+    assert isinstance(doc["paths"], list)
+    assert len(doc["paths"]) == 2
+    assert "entities" not in doc  # additive-only, opt-in via store=
+
+
+def test_all_shortest_paths_to_json_explain_is_additive(graph: _Graph) -> None:
+    graph.edge("A", "B")
+    result = find_all_shortest_paths(graph.case.store, graph.entity("A"), graph.entity("B"))
+    plain = all_shortest_paths_result_to_json(result)
+    explained = all_shortest_paths_result_to_json(result, store=graph.case.store)
+    assert "entities" not in plain
+    assert "entities" in explained
+    assert graph.entity("A") in explained["entities"]  # type: ignore[operator]
+    assert graph.entity("B") in explained["entities"]  # type: ignore[operator]
+    first_step_rel = explained["paths"][0][0]["relationship"]  # type: ignore[index]
+    assert "evidence_lineage" in first_step_rel
 
 
 # -- cycles -----------------------------------------------------------------
