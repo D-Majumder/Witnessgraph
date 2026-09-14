@@ -54,9 +54,9 @@ Design decisions, load-bearing:
 
 ``find_path`` answers "is there a connection, and one example of it";
 it cannot answer whether that connection is corroborated by more than
-one independent relationship chain, or rests on a single link that a
-single missing/mistaken Relationship would sever entirely. That is a
-different, genuinely structural question -- :func:`find_all_shortest_paths`
+one structurally distinct relationship chain, or rests on a single link
+that a single missing/mistaken Relationship would sever entirely. That
+is a different, genuinely structural question -- :func:`find_all_shortest_paths`
 answers it, without falling into the unbounded-enumeration trap
 ``find_path``'s docstring above warns about:
 
@@ -77,12 +77,21 @@ answers it, without falling into the unbounded-enumeration trap
   explores is guaranteed to reach the target, so no time is spent on
   dead ends, and the two-BFS-plus-capped-DFS cost stays a small,
   fixed multiple of ``find_path``'s own cost.
-- **Corroboration, not confirmation.** Multiple independent shortest
-  chains are a structural fact -- they say the connection does not
-  depend on any single Relationship -- never a claim that the
+- **Corroboration, not confirmation.** Multiple structurally distinct
+  shortest chains are a structural fact -- they say the connection does
+  not depend on any single Relationship -- never a claim that the
   connection is therefore true, important, or causal. A single chain
   is likewise never reported as suspect; it is simply what the
   evidence currently records.
+- **Structural multiplicity is not evidence independence.** Two
+  structurally distinct chains -- different Relationships, different
+  intermediate entities -- can still cite the very same underlying
+  EvidenceItem (e.g. two Relationships both ``derived_from`` the one
+  log line that happened to name both connections). Nothing above
+  claims otherwise; :func:`analyze_paths_evidence_overlap` is the
+  separate, explicit analysis of whether a set of returned chains are
+  *also* grounded in disjoint evidence, never conflated with the
+  chain-counting this function does.
 
 A third operation, :func:`find_components`, answers a different kind of
 question than the two above: not "what is reachable from this one
@@ -588,12 +597,19 @@ def find_all_shortest_paths(
     ``max_depth`` hops, up to ``limit`` chains.
 
     Unlike :func:`find_path`, which reports one representative shortest
-    chain, this answers "how many *independent* shortest chains connect
-    these two entities, and what are they" -- see this module's
-    docstring for why that is a genuinely different, still-bounded
-    question. ``source_entity_id == target_entity_id`` is trivially
-    connected (one zero-hop path, ``limit`` never applies to it), exactly
-    as in :func:`find_path`.
+    chain, this answers "how many *structurally distinct* shortest
+    chains connect these two entities, and what are they" -- see this
+    module's docstring for why that is a genuinely different,
+    still-bounded question. ``source_entity_id == target_entity_id`` is
+    trivially connected (one zero-hop path, ``limit`` never applies to
+    it), exactly as in :func:`find_path`.
+
+    Deliberately not called "independent": two structurally distinct
+    chains (different relationships, different intermediate entities)
+    can still cite the very same underlying ``EvidenceItem`` -- see
+    :func:`analyze_paths_evidence_overlap` for the separate, store-backed
+    analysis of whether the chains this function returns are also
+    *evidence*-independent.
 
     Bounded computation, no exponential blow-up: two BFS passes (forward
     from source, backward from target) restrict enumeration to only the
@@ -689,6 +705,165 @@ def find_all_shortest_paths(
         paths=tuple(found_paths[:limit]),
         truncated=truncated,
     )
+
+
+@dataclass(frozen=True)
+class ChainEvidence:
+    """One returned chain's own root evidence, resolved for
+    :func:`analyze_paths_evidence_overlap`.
+
+    ``chain_index`` is the chain's position in the
+    ``AllShortestPathsResult.paths`` tuple it was computed from (0-based,
+    stable for that result). ``root_evidence_ids`` is that chain's every
+    relationship's ``derived_from`` id, resolved down to the root
+    ``EvidenceItem`` id(s) it ultimately traces to (see
+    :func:`_resolve_root_evidence_ids`) -- sorted for determinism, never
+    the raw, possibly-``NormalizedEvent`` ``derived_from`` ids themselves.
+    """
+
+    chain_index: int
+    root_evidence_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PathsEvidenceOverlap:
+    """Whether a set of structurally distinct shortest chains (an
+    :class:`AllShortestPathsResult`'s ``paths``) are also grounded in
+    disjoint evidence -- see :func:`analyze_paths_evidence_overlap`.
+
+    Deliberately a separate result type from ``AllShortestPathsResult``,
+    never merged into it: computing this requires resolving
+    ``NormalizedEvent`` records via the ``Store`` (a store-backed,
+    ``--explain``-style provenance lookup, exactly like
+    ``explain_relationship``/``resolve_entity``), whereas
+    ``find_all_shortest_paths`` itself only ever needs ``Relationship``/
+    adjacency data already loaded once into memory.
+    """
+
+    #: One entry per chain in the ``AllShortestPathsResult`` this was
+    #: computed from, in the same order (``chains[i].chain_index == i``).
+    chains: tuple[ChainEvidence, ...]
+    #: Every root EvidenceItem id cited by 2 or more of the chains --
+    #: empty when every chain's root evidence is disjoint from every
+    #: other's. Sorted for determinism.
+    shared_evidence_ids: tuple[str, ...]
+    #: True only when there are 2 or more chains and none share any root
+    #: evidence id; False when 2+ chains exist and at least one root
+    #: evidence id is shared; None when there are fewer than 2 chains --
+    #: nothing to compare (0 or 1 chain is neither independent nor
+    #: overlapping; the question does not apply).
+    fully_evidence_independent: bool | None
+
+
+def _resolve_root_evidence_ids(store: Store, ref_id: str) -> frozenset[str]:
+    """Resolve one ``Relationship.derived_from`` id down to the root
+    ``EvidenceItem`` id(s) it ultimately traces to.
+
+    A ``derived_from`` id names either an ``EvidenceItem`` directly
+    (already root -- resolves to itself) or a ``NormalizedEvent``, whose
+    own ``derived_from`` names the ``EvidenceItem`` id(s) it was built
+    from (``core.events``: an ``EvidenceItem`` has no ``derived_from`` of
+    its own -- it is always the root; see that module's docstring). A
+    dangling id (names neither -- ``core/`` does not enforce referential
+    integrity at construction time, exactly as :func:`resolve_evidence_ref`
+    already documents) contributes nothing, mirroring that function's own
+    ``"not_found"`` handling -- never fabricated, never raised.
+
+    Cycle-safe by construction, like :func:`_bfs`: an id is resolved at
+    most once (a visited set), so even hypothetically malformed data
+    (e.g. a ``NormalizedEvent`` whose ``derived_from`` names another
+    ``NormalizedEvent``, which the current ingest pipeline never
+    produces but ``core/`` does not forbid) cannot loop forever --
+    termination is structural, not heuristic, exactly as this module's
+    docstring already establishes for BFS.
+    """
+    root_ids: set[str] = set()
+    visited: set[str] = set()
+    frontier = [ref_id]
+    while frontier:
+        next_frontier: list[str] = []
+        for rid in frontier:
+            if rid in visited:
+                continue
+            visited.add(rid)
+            resolved = resolve_evidence_ref(store, rid)
+            if resolved.kind == "evidence_item":
+                root_ids.add(rid)
+            elif resolved.kind == "normalized_event" and resolved.normalized_event is not None:
+                next_frontier.extend(resolved.normalized_event.derived_from)
+        frontier = next_frontier
+    return frozenset(root_ids)
+
+
+def analyze_paths_evidence_overlap(
+    store: Store, result: AllShortestPathsResult
+) -> PathsEvidenceOverlap:
+    """Are the chains ``result.paths`` also grounded in disjoint evidence?
+
+    Answers the question :func:`find_all_shortest_paths` deliberately
+    does not: two structurally distinct chains (different Relationships,
+    different intermediate entities) can still cite the very same
+    underlying EvidenceItem, in which case counting them as separate
+    corroboration would overclaim what the evidence actually supports.
+    This resolves each returned chain's relationships' ``derived_from``
+    ids down to root EvidenceItem ids and reports, precisely, which
+    chains (if any) share one.
+
+    What this means: a root evidence id in ``shared_evidence_ids`` names
+    an EvidenceItem that backs two or more of the returned chains --
+    those chains' apparent structural corroboration rests, at least in
+    part, on the same underlying record. ``fully_evidence_independent``
+    is ``True`` only when every returned chain's root evidence is
+    disjoint from every other's.
+
+    What this does NOT mean: it never claims a chain is therefore true,
+    false, more important, or more trustworthy than another, and it
+    never claims disjoint evidence makes a connection "confirmed" --
+    only that the records cited are distinct. It also says nothing about
+    chains beyond ``result``'s own ``limit``/``truncated`` bound; a
+    truncated result's evidence-independence verdict describes only the
+    chains actually returned.
+
+    Bounded, not a new traversal: for each of ``result.paths`` (already
+    bounded by ``max_depth``/``limit``), this resolves each step's
+    already-known ``derived_from`` ids via :func:`_resolve_root_evidence_ids`
+    -- no graph traversal, no new depth parameter, cost proportional only
+    to the size of the result already computed.
+    """
+    chains: list[ChainEvidence] = []
+    for index, chain in enumerate(result.paths):
+        ids: set[str] = set()
+        for step in chain:
+            for ref_id in step.relationship.derived_from:
+                ids |= _resolve_root_evidence_ids(store, ref_id)
+        chains.append(ChainEvidence(chain_index=index, root_evidence_ids=tuple(sorted(ids))))
+
+    counts: dict[str, int] = {}
+    for chain_evidence in chains:
+        for evidence_id in chain_evidence.root_evidence_ids:
+            counts[evidence_id] = counts.get(evidence_id, 0) + 1
+    shared_evidence_ids = tuple(sorted(eid for eid, count in counts.items() if count >= 2))
+    fully_evidence_independent = None if len(chains) < 2 else len(shared_evidence_ids) == 0
+    return PathsEvidenceOverlap(
+        chains=tuple(chains),
+        shared_evidence_ids=shared_evidence_ids,
+        fully_evidence_independent=fully_evidence_independent,
+    )
+
+
+def _chain_evidence_to_json(chain_evidence: ChainEvidence) -> dict[str, object]:
+    return {
+        "chain_index": chain_evidence.chain_index,
+        "root_evidence_ids": list(chain_evidence.root_evidence_ids),
+    }
+
+
+def paths_evidence_overlap_to_json(overlap: PathsEvidenceOverlap) -> dict[str, object]:
+    return {
+        "chains": [_chain_evidence_to_json(c) for c in overlap.chains],
+        "shared_evidence_ids": list(overlap.shared_evidence_ids),
+        "fully_evidence_independent": overlap.fully_evidence_independent,
+    }
 
 
 def validate_min_size(min_size: int) -> None:
@@ -918,6 +1093,9 @@ def all_shortest_paths_result_to_json(
                 entity_ids.add(step.from_entity_id)
                 entity_ids.add(step.to_entity_id)
         doc["entities"] = _entities_json(store, entity_ids)
+        doc["evidence_independence"] = paths_evidence_overlap_to_json(
+            analyze_paths_evidence_overlap(store, result)
+        )
     return doc
 
 

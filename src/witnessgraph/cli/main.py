@@ -30,9 +30,11 @@ from witnessgraph.correlate.graph import (
     MAX_ALLOWED_DEPTH,
     MAX_ALLOWED_PATHS_LIMIT,
     GraphDirection,
+    PathsEvidenceOverlap,
     ResolvedEntity,
     TraversalStep,
     all_shortest_paths_result_to_json,
+    analyze_paths_evidence_overlap,
     components_result_to_json,
     explain_relationship,
     find_all_shortest_paths,
@@ -1132,6 +1134,30 @@ def graph_path(
         typer.echo(line)
 
 
+def _format_evidence_overlap_text(overlap: PathsEvidenceOverlap) -> list[str]:
+    """Render a PathsEvidenceOverlap for `graph paths --explain`.
+
+    Deliberately distinct wording from the chain-count line above it:
+    "chain(s) found" describes structural multiplicity; this block
+    describes evidence independence -- never conflated, see
+    analyze_paths_evidence_overlap's docstring.
+    """
+    lines = ["evidence independence:"]
+    for chain_evidence in overlap.chains:
+        ids = ", ".join(f"`{eid}`" for eid in chain_evidence.root_evidence_ids)
+        lines.append(
+            f"  chain {chain_evidence.chain_index + 1}: root evidence {ids or '(none found)'}"
+        )
+    if overlap.fully_evidence_independent is None:
+        lines.append("  only one chain -- evidence independence does not apply")
+    elif overlap.fully_evidence_independent:
+        lines.append("  fully evidence-independent: true (no shared root evidence)")
+    else:
+        shared = ", ".join(f"`{eid}`" for eid in overlap.shared_evidence_ids)
+        lines.append(f"  fully evidence-independent: false -- shared evidence: {shared}")
+    return lines
+
+
 @graph_app.command("paths")
 def graph_paths(
     case_dir: Path = typer.Argument(..., help="Case directory to inspect."),
@@ -1171,13 +1197,17 @@ def graph_paths(
 
     Unlike `graph path` (one representative shortest chain), this
     answers whether a structural connection is corroborated by more than
-    one independent chain of relationships, or rests on a single chain
-    that one missing or mistaken Relationship would sever entirely --
-    still a structural fact only, never a claim that a corroborated
-    connection is therefore true, important, or causal. "No path found"
-    within the searched depth is a valid result, not an error; a result
-    with 'truncated: true' means more tied-shortest chains exist beyond
-    --limit, reported honestly rather than silently omitted.
+    one structurally distinct chain of relationships, or rests on a
+    single chain that one missing or mistaken Relationship would sever
+    entirely -- still a structural fact only, never a claim that a
+    corroborated connection is therefore true, important, or causal.
+    "No path found" within the searched depth is a valid result, not an
+    error; a result with 'truncated: true' means more tied-shortest
+    chains exist beyond --limit, reported honestly rather than silently
+    omitted. With --explain and 2 or more chains found, also reports
+    whether those chains are grounded in disjoint evidence or share an
+    underlying EvidenceItem -- structural multiplicity is not the same
+    fact as evidence independence.
     """
     _validate_graph_format(output_format)
     if not (1 <= max_depth <= MAX_ALLOWED_DEPTH):
@@ -1243,6 +1273,8 @@ def graph_paths(
                 entity_ids.add(step.from_entity_id)
                 entity_ids.add(step.to_entity_id)
         lines.extend(_format_entities_text(case.store, entity_ids))
+        overlap = analyze_paths_evidence_overlap(case.store, result)
+        lines.extend(_format_evidence_overlap_text(overlap))
     case.close()
     for line in lines:
         typer.echo(line)
