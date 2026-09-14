@@ -1005,6 +1005,24 @@ def _relationship_to_json(rel: Relationship, *, store: Store | None = None) -> d
     return doc
 
 
+def evidence_item_to_json(item: EvidenceItem) -> dict[str, object]:
+    """Public entry point for :func:`_evidence_item_to_json`.
+
+    Exists for the same reason as :func:`relationship_to_json` -- an
+    Evidence-browsing service function needs this shape (id,
+    source_adapter, adapter_version, source_locator, raw_size_bytes,
+    collected_at, observed_at -- deliberately without
+    ``chain_of_custody``, which is part of ``report.render_json``'s own,
+    separate "full report" shape for the same type, not this module's).
+    """
+    return _evidence_item_to_json(item)
+
+
+def normalized_event_to_json(event: NormalizedEvent) -> dict[str, object]:
+    """Public entry point for :func:`_normalized_event_to_json`."""
+    return _normalized_event_to_json(event)
+
+
 def resolved_evidence_ref_to_json(ref: ResolvedEvidenceRef) -> dict[str, object]:
     """Public entry point for :func:`_resolved_evidence_ref_to_json`.
 

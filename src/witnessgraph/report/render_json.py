@@ -41,17 +41,15 @@ contract, applied to a second, independent output format:
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from witnessgraph.core.entities import entity_to_json
-from witnessgraph.core.events import NormalizedEvent
 from witnessgraph.core.ids import canonical_json_bytes
 from witnessgraph.core.provenance import manifest_verdict
-from witnessgraph.core.time_model import TimeAssertion
 from witnessgraph.correlate.contradiction_tracking import tracked_contradiction_to_json
 from witnessgraph.correlate.contradictions import contradictions_to_json, detect_time_contradictions
 from witnessgraph.correlate.gaps import GapAnalysisResult, gap_analysis_to_json
+from witnessgraph.correlate.timeline import build_timeline_json
 from witnessgraph.correlate.tracking import is_still_reproduced, tracked_finding_to_json
 
 if TYPE_CHECKING:
@@ -62,13 +60,6 @@ if TYPE_CHECKING:
 #: additive fields do not require a bump. Direct precedent:
 #: ``ProvenanceManifest.manifest_version`` exists for the same reason.
 SCHEMA_VERSION = 1
-
-
-def _timeline_sort_key(
-    event: NormalizedEvent, assertions_by_event: dict[str, list[TimeAssertion]]
-) -> datetime:
-    times = assertions_by_event.get(event.id, [])
-    return min((a.value for a in times), default=event.created_at)
 
 
 # -- Section builders (mirror report.render's section renderers exactly,
@@ -115,40 +106,6 @@ def _build_evidence(store: Store) -> list[dict[str, Any]]:
                         "source_id": record.source_id,
                     }
                     for record in item.chain_of_custody
-                ],
-            }
-        )
-    return result
-
-
-def _build_timeline(store: Store) -> list[dict[str, Any]]:
-    assertions_by_event: dict[str, list[TimeAssertion]] = {}
-    for assertion in store.list_time_assertions():
-        assertions_by_event.setdefault(assertion.subject_event_id, []).append(assertion)
-
-    events = sorted(
-        store.list_normalized_events(),
-        key=lambda e: (_timeline_sort_key(e, assertions_by_event), e.id),
-    )
-    result = []
-    for event in events:
-        assertions = sorted(assertions_by_event.get(event.id, []), key=lambda a: a.id)
-        result.append(
-            {
-                "id": event.id,
-                "event_type": event.event_type,
-                "entity_ids": list(event.entity_ids),
-                "derived_from": list(event.derived_from),
-                "attributes": dict(event.attributes),
-                "time_assertions": [
-                    {
-                        "id": a.id,
-                        "value": a.value,
-                        "precision": a.precision.value,
-                        "asserted_by": a.asserted_by,
-                        "source_evidence_id": a.source_evidence_id,
-                    }
-                    for a in assertions
                 ],
             }
         )
@@ -262,7 +219,7 @@ def build_report_json_tree(
         "case_name": case_name,
         "manifest": _build_manifest(recomputed_manifest, recorded_manifest),
         "evidence": _build_evidence(store),
-        "timeline": _build_timeline(store),
+        "timeline": build_timeline_json(store),
         "entities": _build_entities(store),
         "relationships": _build_relationships(store),
         "hypotheses": _build_hypotheses(store),

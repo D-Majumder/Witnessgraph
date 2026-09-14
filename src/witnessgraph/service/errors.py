@@ -32,6 +32,14 @@ class RelationshipNotFoundError(ServiceError):
     """No relationship with the given id exists in this case."""
 
 
+class TrackedFindingNotFoundError(ServiceError):
+    """No tracked gap finding with the given id exists in this case."""
+
+
+class TrackedContradictionNotFoundError(ServiceError):
+    """No tracked contradiction with the given id exists in this case."""
+
+
 class ValidationError(ServiceError):
     """An application-level input failed validation (e.g. max_depth/limit
     out of range) -- mirrors what ``typer.BadParameter`` already reports

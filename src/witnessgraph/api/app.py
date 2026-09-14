@@ -17,11 +17,15 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from witnessgraph.api.errors import register_exception_handlers
 from witnessgraph.api.routes import case as case_routes
+from witnessgraph.api.routes import contradiction_findings as contradiction_findings_routes
 from witnessgraph.api.routes import contradictions as contradictions_routes
 from witnessgraph.api.routes import entities as entities_routes
 from witnessgraph.api.routes import evidence as evidence_routes
+from witnessgraph.api.routes import findings as findings_routes
+from witnessgraph.api.routes import gaps as gaps_routes
 from witnessgraph.api.routes import graph as graph_routes
 from witnessgraph.api.routes import relationships as relationships_routes
+from witnessgraph.api.routes import timeline as timeline_routes
 from witnessgraph.service.case_service import open_case
 
 #: The frontend's dev-server origins (Vite's default port). Never "*" --
@@ -70,4 +74,8 @@ def create_app(case_dir: Path, *, allowed_origins: list[str] | None = None) -> F
     app.include_router(evidence_routes.router)
     app.include_router(graph_routes.router)
     app.include_router(contradictions_routes.router)
+    app.include_router(gaps_routes.router)
+    app.include_router(timeline_routes.router)
+    app.include_router(findings_routes.router)
+    app.include_router(contradiction_findings_routes.router)
     return app

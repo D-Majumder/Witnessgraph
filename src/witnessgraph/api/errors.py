@@ -18,6 +18,8 @@ from witnessgraph.service.errors import (
     CaseUnreadableError,
     EntityNotFoundError,
     RelationshipNotFoundError,
+    TrackedContradictionNotFoundError,
+    TrackedFindingNotFoundError,
     ValidationError,
 )
 
@@ -32,6 +34,22 @@ def register_exception_handlers(app: FastAPI) -> None:
         request: Request, exc: RelationshipNotFoundError
     ) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": f"no such relationship: {exc}"})
+
+    @app.exception_handler(TrackedFindingNotFoundError)
+    async def _finding_not_found(
+        request: Request, exc: TrackedFindingNotFoundError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=404, content={"detail": f"no such tracked finding: {exc}"}
+        )
+
+    @app.exception_handler(TrackedContradictionNotFoundError)
+    async def _contradiction_finding_not_found(
+        request: Request, exc: TrackedContradictionNotFoundError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=404, content={"detail": f"no such tracked contradiction: {exc}"}
+        )
 
     @app.exception_handler(ValidationError)
     async def _validation_error(request: Request, exc: ValidationError) -> JSONResponse:

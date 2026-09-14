@@ -13,3 +13,10 @@ router = APIRouter(tags=["contradictions"])
 @router.get("/contradictions")
 def list_contradictions(case: Case = Depends(get_case)) -> Response:
     return json_response(contradictions_service.list_contradictions(case))
+
+
+@router.post("/contradictions/track")
+def track_contradictions(case: Case = Depends(get_case)) -> Response:
+    """Re-run detection and persist each contradiction found -- write.
+    See ``witnessgraph.service.contradictions_service.track_detected_contradictions``."""
+    return json_response(contradictions_service.track_detected_contradictions(case))
