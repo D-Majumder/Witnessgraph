@@ -47,3 +47,20 @@ class Entity(BaseModel):
         if not v.strip():
             raise ValueError("Entity.entity_type must not be blank")
         return v
+
+
+def entity_to_json(entity: Entity) -> dict[str, object]:
+    """A plain dict/list tree for ``entity`` -- the same field shape
+    ``report.render_json._build_entities`` already produces per entity,
+    exposed publicly so callers other than the whole-case report (the
+    service layer, in particular) can serialize a single ``Entity``
+    without going through Pydantic's own (non-canonical) JSON encoding.
+    """
+    return {
+        "id": entity.id,
+        "entity_type": entity.entity_type,
+        "identifiers": dict(entity.identifiers),
+        "first_seen": entity.first_seen,
+        "last_seen": entity.last_seen,
+        "derived_from": list(entity.derived_from),
+    }

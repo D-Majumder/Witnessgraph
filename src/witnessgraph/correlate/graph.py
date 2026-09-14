@@ -1005,6 +1005,30 @@ def _relationship_to_json(rel: Relationship, *, store: Store | None = None) -> d
     return doc
 
 
+def resolved_evidence_ref_to_json(ref: ResolvedEvidenceRef) -> dict[str, object]:
+    """Public entry point for :func:`_resolved_evidence_ref_to_json`.
+
+    Exists for the same reason as :func:`relationship_to_json`: a caller
+    outside this module (the service layer's ``evidence_service``, which
+    resolves an ``Entity.derived_from`` id the same way a relationship's
+    own lineage already resolves ``Relationship.derived_from``) needs a
+    supported way to serialize one resolved reference.
+    """
+    return _resolved_evidence_ref_to_json(ref)
+
+
+def relationship_to_json(rel: Relationship, *, store: Store | None = None) -> dict[str, object]:
+    """Public entry point for :func:`_relationship_to_json`.
+
+    Every existing caller inside this module keeps using the private
+    name; this alias exists so a caller outside ``correlate.graph`` (the
+    service layer, in particular) has a supported way to serialize one
+    ``Relationship`` -- including its resolved ``evidence_lineage`` when
+    ``store`` is given -- without duplicating this function's field list.
+    """
+    return _relationship_to_json(rel, store=store)
+
+
 def _step_to_json(step: TraversalStep, *, store: Store | None = None) -> dict[str, object]:
     return {
         "from_entity_id": step.from_entity_id,

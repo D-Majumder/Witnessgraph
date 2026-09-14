@@ -64,6 +64,7 @@ from witnessgraph.portable import export_case, import_case
 from witnessgraph.replay.replay import ReplayResult, replay_and_verify
 from witnessgraph.report.render import render_report_bytes
 from witnessgraph.report.render_json import render_report_json_bytes
+from witnessgraph.service import entities_service, relationships_service
 from witnessgraph.store.base import Store
 from witnessgraph.store.case import Case
 
@@ -257,9 +258,10 @@ def entities_create(
 @entities_app.command("list")
 def entities_list(case_dir: Path) -> None:
     case = _open_case_or_fail(case_dir)
-    for entity in case.store.list_entities():
-        typer.echo(f"{entity.id}  {entity.entity_type}  {entity.identifiers}")
+    entities = entities_service.list_entities(case)
     case.close()
+    for entity in entities:
+        typer.echo(f"{entity['id']}  {entity['entity_type']}  {entity['identifiers']}")
 
 
 @entities_app.command("show")
@@ -358,19 +360,15 @@ def relationships_list(
 ) -> None:
     """List relationships in a case, optionally filtered to one entity."""
     case = _open_case_or_fail(case_dir)
-    relationships = case.store.list_relationships()
+    relationships = relationships_service.list_relationships(case, entity_id=entity)
     case.close()
-    if entity is not None:
-        relationships = [
-            r for r in relationships if entity in (r.source_entity_id, r.target_entity_id)
-        ]
     if not relationships:
         typer.echo("no relationships")
         return
     for rel in relationships:
         typer.echo(
-            f"{rel.id}  {rel.source_entity_id} -[{rel.relationship_type}]-> "
-            f"{rel.target_entity_id}"
+            f"{rel['id']}  {rel['source_entity_id']} -[{rel['relationship_type']}]-> "
+            f"{rel['target_entity_id']}"
         )
 
 

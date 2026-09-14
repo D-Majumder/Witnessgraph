@@ -44,8 +44,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from witnessgraph.core.entities import entity_to_json
 from witnessgraph.core.events import NormalizedEvent
 from witnessgraph.core.ids import canonical_json_bytes
+from witnessgraph.core.provenance import manifest_verdict
 from witnessgraph.core.time_model import TimeAssertion
 from witnessgraph.correlate.contradiction_tracking import tracked_contradiction_to_json
 from witnessgraph.correlate.contradictions import contradictions_to_json, detect_time_contradictions
@@ -84,19 +86,10 @@ def _build_manifest(
             "manifest_version": m.manifest_version,
         }
 
-    if recorded_manifest is None:
-        verdict = "NO_RECORDED_MANIFEST"
-    elif recorded_manifest.manifest_version != recomputed_manifest.manifest_version:
-        verdict = "NOT_COMPARABLE"
-    elif recomputed_manifest.manifest_hash == recorded_manifest.manifest_hash:
-        verdict = "MATCH"
-    else:
-        verdict = "MISMATCH"
-
     return {
         "recomputed": _manifest_dict(recomputed_manifest),
         "recorded": _manifest_dict(recorded_manifest) if recorded_manifest is not None else None,
-        "verdict": verdict,
+        "verdict": manifest_verdict(recomputed_manifest, recorded_manifest),
     }
 
 
@@ -164,17 +157,7 @@ def _build_timeline(store: Store) -> list[dict[str, Any]]:
 
 def _build_entities(store: Store) -> list[dict[str, Any]]:
     entities = sorted(store.list_entities(), key=lambda e: e.id)
-    return [
-        {
-            "id": entity.id,
-            "entity_type": entity.entity_type,
-            "identifiers": dict(entity.identifiers),
-            "first_seen": entity.first_seen,
-            "last_seen": entity.last_seen,
-            "derived_from": list(entity.derived_from),
-        }
-        for entity in entities
-    ]
+    return [entity_to_json(entity) for entity in entities]
 
 
 def _build_relationships(store: Store) -> list[dict[str, Any]]:

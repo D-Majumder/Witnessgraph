@@ -87,6 +87,27 @@ def _collection_hash(object_hashes: dict[str, str]) -> str:
     return sha256_hex(canonical_json_bytes(sorted_pairs))
 
 
+def manifest_verdict(
+    recomputed: ProvenanceManifest, recorded: ProvenanceManifest | None
+) -> str:
+    """Compare a freshly recomputed manifest against the recorded one.
+
+    One of ``"NO_RECORDED_MANIFEST"`` (no ``manifest.json`` exists yet),
+    ``"NOT_COMPARABLE"`` (recorded under a different ``manifest_version``
+    algorithm -- see this module's docstring), ``"MATCH"``, or
+    ``"MISMATCH"``. Shared by ``report.render_json`` and
+    ``witnessgraph.service`` so both surfaces report identical verdicts
+    for identical case state.
+    """
+    if recorded is None:
+        return "NO_RECORDED_MANIFEST"
+    if recorded.manifest_version != recomputed.manifest_version:
+        return "NOT_COMPARABLE"
+    if recomputed.manifest_hash == recorded.manifest_hash:
+        return "MATCH"
+    return "MISMATCH"
+
+
 def compute_manifest(store: Store) -> ProvenanceManifest:
     """Compute the current provenance manifest for everything held in ``store``.
 
