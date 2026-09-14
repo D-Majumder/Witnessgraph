@@ -52,6 +52,38 @@ Design decisions, load-bearing:
   fewest-hop chain BFS discovers first, or reports none exists within
   ``max_depth``.
 
+``find_path`` answers "is there a connection, and one example of it";
+it cannot answer whether that connection is corroborated by more than
+one independent relationship chain, or rests on a single link that a
+single missing/mistaken Relationship would sever entirely. That is a
+different, genuinely structural question -- :func:`find_all_shortest_paths`
+answers it, without falling into the unbounded-enumeration trap
+``find_path``'s docstring above warns about:
+
+- **Shortest-length paths only, never all paths.** Only chains tied for
+  the minimum hop count between source and target are considered --
+  exactly the same notion of "shortest" ``find_path`` already uses.
+  Longer, structurally uninteresting detours are never enumerated.
+- **Hard-capped, not merely bounded by depth.** Even restricted to
+  shortest length, the number of *tied* chains can still grow quickly
+  in a densely-connected graph. ``limit`` (validated, like
+  ``max_depth``, against a fixed ceiling) caps how many are ever
+  materialized; ``truncated=True`` reports honestly that more exist
+  beyond the cap rather than silently returning a partial answer that
+  looks complete.
+- **No wasted work.** Enumeration runs only over the subgraph already
+  known to lie on some shortest source-target chain (found via one
+  extra bounded BFS run backward from the target); every branch DFS
+  explores is guaranteed to reach the target, so no time is spent on
+  dead ends, and the two-BFS-plus-capped-DFS cost stays a small,
+  fixed multiple of ``find_path``'s own cost.
+- **Corroboration, not confirmation.** Multiple independent shortest
+  chains are a structural fact -- they say the connection does not
+  depend on any single Relationship -- never a claim that the
+  connection is therefore true, important, or causal. A single chain
+  is likewise never reported as suspect; it is simply what the
+  evidence currently records.
+
 A third operation, :func:`find_components`, answers a different kind of
 question than the two above: not "what is reachable from this one
 entity" but "how does the whole case's relationship graph partition into
@@ -155,6 +187,17 @@ DEFAULT_PATH_MAX_DEPTH = 10
 #: than the graph actually contains.
 MAX_ALLOWED_DEPTH = 50
 
+#: Default cap on how many tied shortest chains find_all_shortest_paths
+#: ever materializes -- generous enough to see "a handful of independent
+#: chains" without inviting a large response by default.
+DEFAULT_PATHS_LIMIT = 10
+
+#: Hard ceiling on --limit -- defensive input validation, same rationale
+#: as MAX_ALLOWED_DEPTH: unlike max_depth, this one *does* bound real
+#: work (each additional path costs up to max_depth steps of DFS), so it
+#: is also a genuine performance safeguard, not only defensive.
+MAX_ALLOWED_PATHS_LIMIT = 500
+
 
 class GraphDirection(str, Enum):
     OUT = "out"
@@ -215,6 +258,30 @@ class PathResult:
     @property
     def hop_count(self) -> int | None:
         return len(self.steps) if self.found else None
+
+
+@dataclass(frozen=True)
+class AllShortestPathsResult:
+    """Every distinct chain tied for shortest between two entities, up to ``limit``.
+
+    See :func:`find_all_shortest_paths` and this module's docstring for
+    why this is a different question than :class:`PathResult` answers.
+    """
+
+    source_entity_id: str
+    target_entity_id: str
+    direction: GraphDirection
+    max_depth: int
+    limit: int
+    found: bool
+    hop_count: int | None
+    #: Each element is one complete source -> target chain (steps in
+    #: order), exactly like PathResult.steps. Deterministically ordered
+    #: (see find_all_shortest_paths); length <= limit always.
+    paths: tuple[tuple[TraversalStep, ...], ...]
+    #: True if more tied-shortest chains exist beyond ``limit`` -- the
+    #: response is then an honest partial view, never silently complete.
+    truncated: bool
 
 
 @dataclass(frozen=True)
@@ -475,6 +542,155 @@ def find_path(
     )
 
 
+def validate_paths_limit(limit: int) -> None:
+    if not (1 <= limit <= MAX_ALLOWED_PATHS_LIMIT):
+        raise ValueError(f"limit must be between 1 and {MAX_ALLOWED_PATHS_LIMIT} (got {limit})")
+
+
+def _reverse_direction(direction: GraphDirection) -> GraphDirection:
+    """The direction that turns "distance from X" into "distance to X".
+
+    BOTH is its own reverse (an undirected search is symmetric); OUT and
+    IN swap, since "how far can I get following outgoing edges from X"
+    is exactly "how far can something reach X by following incoming
+    edges to X" run from X instead.
+    """
+    if direction is GraphDirection.OUT:
+        return GraphDirection.IN
+    if direction is GraphDirection.IN:
+        return GraphDirection.OUT
+    return GraphDirection.BOTH
+
+
+def _distance_map(
+    store: Store, origin_entity_id: str, *, max_depth: int, direction: GraphDirection
+) -> dict[str, int]:
+    """``{entity_id: hop_count}`` from ``origin_entity_id``, including the
+    origin itself at distance 0 (unlike ``_bfs``, which never reports the
+    origin -- callers here need it as a valid, zero-distance member)."""
+    discovered = _bfs(store, origin_entity_id, max_depth=max_depth, direction=direction)
+    distances = {eid: hop for eid, (hop, _step) in discovered.items()}
+    distances[origin_entity_id] = 0
+    return distances
+
+
+def find_all_shortest_paths(
+    store: Store,
+    source_entity_id: str,
+    target_entity_id: str,
+    *,
+    max_depth: int = DEFAULT_PATH_MAX_DEPTH,
+    direction: GraphDirection = GraphDirection.OUT,
+    limit: int = DEFAULT_PATHS_LIMIT,
+) -> AllShortestPathsResult:
+    """Every distinct relationship chain tied for shortest (fewest-hop)
+    between ``source_entity_id`` and ``target_entity_id``, within
+    ``max_depth`` hops, up to ``limit`` chains.
+
+    Unlike :func:`find_path`, which reports one representative shortest
+    chain, this answers "how many *independent* shortest chains connect
+    these two entities, and what are they" -- see this module's
+    docstring for why that is a genuinely different, still-bounded
+    question. ``source_entity_id == target_entity_id`` is trivially
+    connected (one zero-hop path, ``limit`` never applies to it), exactly
+    as in :func:`find_path`.
+
+    Bounded computation, no exponential blow-up: two BFS passes (forward
+    from source, backward from target) restrict enumeration to only the
+    edges that actually lie on some shortest chain; depth-first
+    enumeration over that pruned subgraph then stops the instant
+    ``limit`` chains are found, so cost is bounded by the cost of two
+    BFS passes plus ``O(limit * max_depth)`` -- independent of how many
+    tied chains the graph may actually contain.
+    """
+    validate_max_depth(max_depth)
+    validate_paths_limit(limit)
+    if source_entity_id == target_entity_id:
+        return AllShortestPathsResult(
+            source_entity_id=source_entity_id,
+            target_entity_id=target_entity_id,
+            direction=direction,
+            max_depth=max_depth,
+            limit=limit,
+            found=True,
+            hop_count=0,
+            paths=((),),
+            truncated=False,
+        )
+
+    dist_from_source = _distance_map(
+        store, source_entity_id, max_depth=max_depth, direction=direction
+    )
+    if target_entity_id not in dist_from_source:
+        return AllShortestPathsResult(
+            source_entity_id=source_entity_id,
+            target_entity_id=target_entity_id,
+            direction=direction,
+            max_depth=max_depth,
+            limit=limit,
+            found=False,
+            hop_count=None,
+            paths=(),
+            truncated=False,
+        )
+    hop_count = dist_from_source[target_entity_id]
+    dist_to_target = _distance_map(
+        store, target_entity_id, max_depth=max_depth, direction=_reverse_direction(direction)
+    )
+
+    def on_some_shortest_chain(entity_id: str) -> bool:
+        return (
+            entity_id in dist_from_source
+            and entity_id in dist_to_target
+            and dist_from_source[entity_id] + dist_to_target[entity_id] == hop_count
+        )
+
+    out_adj, in_adj = _build_adjacency(store)
+    dag_adj: dict[str, list[TraversalStep]] = {}
+    for entity_id, from_dist in dist_from_source.items():
+        if from_dist >= hop_count or not on_some_shortest_chain(entity_id):
+            continue
+        next_steps = [
+            step
+            for step in _steps_from(entity_id, out_adj, in_adj, direction)
+            if dist_from_source.get(step.to_entity_id) == from_dist + 1
+            and on_some_shortest_chain(step.to_entity_id)
+        ]
+        next_steps.sort(key=lambda s: (s.to_entity_id, s.relationship.id))
+        if next_steps:
+            dag_adj[entity_id] = next_steps
+
+    found_paths: list[tuple[TraversalStep, ...]] = []
+    current_chain: list[TraversalStep] = []
+
+    def dfs(entity_id: str) -> None:
+        if len(found_paths) > limit:
+            return
+        if entity_id == target_entity_id:
+            found_paths.append(tuple(current_chain))
+            return
+        for step in dag_adj.get(entity_id, []):
+            current_chain.append(step)
+            dfs(step.to_entity_id)
+            current_chain.pop()
+            if len(found_paths) > limit:
+                return
+
+    dfs(source_entity_id)
+    truncated = len(found_paths) > limit
+    return AllShortestPathsResult(
+        source_entity_id=source_entity_id,
+        target_entity_id=target_entity_id,
+        direction=direction,
+        max_depth=max_depth,
+        limit=limit,
+        found=True,
+        hop_count=hop_count,
+        paths=tuple(found_paths[:limit]),
+        truncated=truncated,
+    )
+
+
 def validate_min_size(min_size: int) -> None:
     if min_size < 1:
         raise ValueError(f"min_size must be at least 1 (got {min_size})")
@@ -675,6 +891,32 @@ def path_result_to_json(result: PathResult, *, store: Store | None = None) -> di
         for step in result.steps:
             entity_ids.add(step.from_entity_id)
             entity_ids.add(step.to_entity_id)
+        doc["entities"] = _entities_json(store, entity_ids)
+    return doc
+
+
+def all_shortest_paths_result_to_json(
+    result: AllShortestPathsResult, *, store: Store | None = None
+) -> dict[str, object]:
+    doc: dict[str, object] = {
+        "source_entity_id": result.source_entity_id,
+        "target_entity_id": result.target_entity_id,
+        "direction": result.direction.value,
+        "max_depth": result.max_depth,
+        "limit": result.limit,
+        "found": result.found,
+        "hop_count": result.hop_count,
+        "truncated": result.truncated,
+        "paths": [
+            [_step_to_json(step, store=store) for step in chain] for chain in result.paths
+        ],
+    }
+    if store is not None:
+        entity_ids = {result.source_entity_id, result.target_entity_id}
+        for chain in result.paths:
+            for step in chain:
+                entity_ids.add(step.from_entity_id)
+                entity_ids.add(step.to_entity_id)
         doc["entities"] = _entities_json(store, entity_ids)
     return doc
 

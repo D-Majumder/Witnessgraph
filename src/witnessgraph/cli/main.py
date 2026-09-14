@@ -26,12 +26,16 @@ from witnessgraph.correlate.gaps import DEFAULT_MIN_CORROBORATING_EVENTS, find_g
 from witnessgraph.correlate.graph import (
     DEFAULT_NEIGHBORS_MAX_DEPTH,
     DEFAULT_PATH_MAX_DEPTH,
+    DEFAULT_PATHS_LIMIT,
     MAX_ALLOWED_DEPTH,
+    MAX_ALLOWED_PATHS_LIMIT,
     GraphDirection,
     ResolvedEntity,
     TraversalStep,
+    all_shortest_paths_result_to_json,
     components_result_to_json,
     explain_relationship,
+    find_all_shortest_paths,
     find_components,
     find_neighbors,
     find_path,
@@ -1122,6 +1126,122 @@ def graph_path(
         for step in result.steps:
             entity_ids.add(step.from_entity_id)
             entity_ids.add(step.to_entity_id)
+        lines.extend(_format_entities_text(case.store, entity_ids))
+    case.close()
+    for line in lines:
+        typer.echo(line)
+
+
+@graph_app.command("paths")
+def graph_paths(
+    case_dir: Path = typer.Argument(..., help="Case directory to inspect."),
+    source_entity_id: str = typer.Argument(..., help="Entity id to search from."),
+    target_entity_id: str = typer.Argument(..., help="Entity id to search for."),
+    max_depth: int = typer.Option(
+        DEFAULT_PATH_MAX_DEPTH,
+        "--max-depth",
+        help=f"Maximum number of hops to search before giving up (1-{MAX_ALLOWED_DEPTH}).",
+    ),
+    direction: GraphDirection = typer.Option(
+        GraphDirection.OUT.value,
+        "--direction",
+        help=(
+            "Which edges to follow: 'out' (default -- only forward along "
+            "each relationship's own direction), 'in' (only backward), or "
+            "'both' (either way -- an explicit, undirected search)."
+        ),
+    ),
+    limit: int = typer.Option(
+        DEFAULT_PATHS_LIMIT,
+        "--limit",
+        help=(
+            f"Maximum number of tied-shortest chains to return "
+            f"(1-{MAX_ALLOWED_PATHS_LIMIT}). More chains than this may "
+            "exist; see 'truncated' in the result."
+        ),
+    ),
+    explain: bool = typer.Option(False, "--explain", help=_EXPLAIN_HELP),
+    output_format: str = typer.Option(
+        "text", "--format", help="Output format: 'text' (default) or 'json'."
+    ),
+) -> None:
+    """Find every distinct relationship chain tied for shortest between
+    SOURCE_ENTITY_ID and TARGET_ENTITY_ID, up to --limit, within
+    --max-depth hops.
+
+    Unlike `graph path` (one representative shortest chain), this
+    answers whether a structural connection is corroborated by more than
+    one independent chain of relationships, or rests on a single chain
+    that one missing or mistaken Relationship would sever entirely --
+    still a structural fact only, never a claim that a corroborated
+    connection is therefore true, important, or causal. "No path found"
+    within the searched depth is a valid result, not an error; a result
+    with 'truncated: true' means more tied-shortest chains exist beyond
+    --limit, reported honestly rather than silently omitted.
+    """
+    _validate_graph_format(output_format)
+    if not (1 <= max_depth <= MAX_ALLOWED_DEPTH):
+        raise typer.BadParameter(
+            f"must be between 1 and {MAX_ALLOWED_DEPTH}", param_hint="--max-depth"
+        )
+    if not (1 <= limit <= MAX_ALLOWED_PATHS_LIMIT):
+        raise typer.BadParameter(
+            f"must be between 1 and {MAX_ALLOWED_PATHS_LIMIT}", param_hint="--limit"
+        )
+    case = _open_case_or_fail(case_dir)
+    if case.store.get_entity(source_entity_id) is None:
+        case.close()
+        typer.echo(f"no such entity: {source_entity_id}", err=True)
+        raise typer.Exit(1)
+    if case.store.get_entity(target_entity_id) is None:
+        case.close()
+        typer.echo(f"no such entity: {target_entity_id}", err=True)
+        raise typer.Exit(1)
+    result = find_all_shortest_paths(
+        case.store,
+        source_entity_id,
+        target_entity_id,
+        max_depth=max_depth,
+        direction=direction,
+        limit=limit,
+    )
+
+    if output_format == "json":
+        doc = all_shortest_paths_result_to_json(result, store=case.store if explain else None)
+        case.close()
+        sys.stdout.buffer.write(canonical_json_bytes(doc))
+        sys.stdout.buffer.flush()
+        return
+
+    if not result.found:
+        case.close()
+        typer.echo(
+            f"no path found from {source_entity_id} to {target_entity_id} "
+            f"within {max_depth} hop(s) (direction={direction.value})"
+        )
+        return
+    if source_entity_id == target_entity_id:
+        case.close()
+        typer.echo(f"{source_entity_id} is the search target itself: 0 hop(s)")
+        return
+    lines = [
+        f"{len(result.paths)} shortest chain(s) found: {result.hop_count} hop(s) each"
+        + (" (more exist beyond --limit)" if result.truncated else "")
+    ]
+    for i, chain in enumerate(result.paths, start=1):
+        lines.append(f"chain {i}:")
+        for j, step in enumerate(chain, start=1):
+            lines.append(f"  step {j}: {_format_step_text(step)}")
+            if explain:
+                lines.extend(
+                    _format_evidence_lineage_text(case.store, step.relationship, "     ")
+                )
+    if explain:
+        entity_ids = {source_entity_id, target_entity_id}
+        for chain in result.paths:
+            for step in chain:
+                entity_ids.add(step.from_entity_id)
+                entity_ids.add(step.to_entity_id)
         lines.extend(_format_entities_text(case.store, entity_ids))
     case.close()
     for line in lines:
