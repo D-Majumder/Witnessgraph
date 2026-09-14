@@ -12,3 +12,10 @@ dist/
 *.wgcase
 /tmp-*/
 examples/sample-case/_run/
+
+# frontend (Node/Vite)
+node_modules/
+frontend/.vite/
+*.local
+!/.env.example
+!frontend/.env.example

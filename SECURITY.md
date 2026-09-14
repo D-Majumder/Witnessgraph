@@ -12,8 +12,16 @@ accepted into this codebase.
   (`witnessgraph.ingest.base.SourceDescriptor`). There is no adapter, CLI
   command, or code path that opens an outbound connection, scans a host,
   or acts on a live target.
-- **No network listener.** The CLI is a local process; there is no server
-  mode in v0.1.
+- **No network listener in the core engine.** `core/`, `store/`,
+  `ingest/`, `correlate/`, and `replay/` never open a listener; the CLI
+  is a local process. The UI v1 milestone adds one explicit, narrowly
+  scoped exception: `witnessgraph.api`, a local-only FastAPI server that
+  binds to `127.0.0.1` only (never `0.0.0.0` or a public interface),
+  serves exactly one case directory chosen at process startup (never
+  from a request), and is started manually by the user
+  (`witnessgraph-api <case_dir>`) — it is never started automatically,
+  and no other part of the engine imports or depends on it. See
+  `docs/phase-ui-v1-implementation.md` for the full security boundary.
 - **No telemetry.** Nothing is ever sent anywhere.
 - **No credential harvesting or exploitation capability**, automated or
   otherwise.

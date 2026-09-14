@@ -62,9 +62,10 @@ any command (or command group) below for the exact options.
 The core object model (evidence, provenance, hypotheses) is stable at
 v0.1 (`DESIGN.md`'s seven locked principles). Everything else below was
 added afterward, in the same evidence-first style, and is exercised by
-731 tests. There is no AI integration, no graph database, and no web
-UI — this is deliberately a local CLI over a SQLite + content-addressed
-store; see `DESIGN.md` for what stays out of scope by design.
+778 tests. There is no AI integration and no graph database — this is
+deliberately a local CLI plus a thin, local-only, optional web UI over a
+SQLite + content-addressed store; see `DESIGN.md` for what stays out of
+scope by design. See [Web UI (v1)](#web-ui-v1) below for the UI.
 
 ### CLI reference
 
@@ -101,7 +102,11 @@ src/witnessgraph/
 ├── replay/      # Provenance manifest recomputation/verification
 ├── report/      # Deterministic Markdown/JSON report rendering
 ├── cli/         # Typer CLI wiring the above into `witnessgraph`
+├── service/     # Thin application/service boundary shared by the CLI and the API (UI v1)
+├── api/         # Local-only FastAPI backend, bound to one case directory (UI v1)
 └── portable.py  # .wgcase export/import
+
+frontend/        # React + TypeScript + Cytoscape.js UI (UI v1) -- see below
 ```
 
 ## Relationships
@@ -571,6 +576,52 @@ promoted to public, reusable functions rather than duplicated, so
 `report`'s own JSON output is unchanged and drawn from the same code
 path a standalone command now also uses.
 
+## Web UI (v1)
+
+A local-only, read-mostly web UI over an existing case: React + TypeScript
++ Cytoscape.js talking to a thin FastAPI backend, which itself is a thin
+wrapper over `witnessgraph.service` — which calls exactly the same
+`core`/`correlate`/`store` functions the CLI does. The CLI remains the
+primary, scriptable interface; the UI is an additional, optional
+consumer of the same engine. See
+`docs/phase-ui-v1-architecture-design.md` for the full architecture and
+`docs/phase-ui-v1-implementation.md` for what was actually built,
+including deviations and deferred items.
+
+**1. Start the backend**, bound to one case directory:
+
+```sh
+witnessgraph-api path/to/case-directory
+```
+
+This binds to `127.0.0.1` only and serves that one case for its entire
+process lifetime — opening a different case means restarting it pointed
+elsewhere. It prints the URL it bound to (default
+`http://127.0.0.1:8420`).
+
+**2. Start the frontend** (from `frontend/`, once per checkout):
+
+```sh
+cd frontend
+npm install
+npm run dev
+```
+
+Open the printed URL (default `http://localhost:5173`). The UI talks to
+the backend over `fetch()` at `http://127.0.0.1:8420` by default —
+override with a `VITE_API_BASE_URL` environment variable (see
+`frontend/.env.example`) if the backend runs on a different port.
+
+**Frontend checks:**
+
+```sh
+cd frontend
+npm run lint       # oxlint
+npm run typecheck  # tsc --noEmit
+npm run test       # vitest
+npm run build      # tsc -b && vite build
+```
+
 ## Testing
 
 ```sh
@@ -579,7 +630,7 @@ ruff check .
 mypy src
 ```
 
-731 tests (unit + integration) exercise the full pipeline, including
+778 tests (unit + integration) exercise the full pipeline, including
 property-based tests (`hypothesis`) for serialization and provenance
 determinism. `ruff` and `mypy --strict` are both clean on `src/`.
 
