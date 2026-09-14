@@ -426,3 +426,40 @@ def find_gaps(
         ),
         refine_source_by_attribute=refine_source_by_attribute,
     )
+
+
+def gap_analysis_to_json(result: GapAnalysisResult) -> dict[str, object]:
+    """A plain dict/list tree for one ``find_gaps`` result -- pass to
+    ``core.ids.canonical_json_bytes`` for encoding, exactly like
+    ``correlate.graph``'s own ``*_to_json`` builders.
+
+    ``result.findings`` is already deterministically ordered by
+    :func:`find_gaps` itself (unlike ``detect_time_contradictions``,
+    which is not) -- this never re-sorts it, only reshapes it.
+    ``bounding_absent_assertion_ids`` is rendered in its stored
+    ``[start, end]`` order, never sorted -- see ``GapFinding``'s own
+    docstring: unlike a contradiction's assertion pair, this order is
+    semantically significant (a bracket, not an unordered pair).
+    """
+    return {
+        "refine_source_by_attribute": result.refine_source_by_attribute,
+        "findings": [
+            {
+                "absent_source": f.absent_source,
+                "present_source": f.present_source,
+                "absent_source_refinement": f.absent_source_refinement,
+                "present_source_refinement": f.present_source_refinement,
+                "interval_start": f.interval_start,
+                "interval_end": f.interval_end,
+                "corroborating_time_assertion_ids": list(f.corroborating_time_assertion_ids),
+                "bounding_absent_assertion_ids": list(f.bounding_absent_assertion_ids),
+            }
+            for f in result.findings
+        ],
+        "excluded_no_time_assertion": result.excluded_no_time_assertion,
+        "excluded_no_declared_source": result.excluded_no_declared_source,
+        "excluded_ambiguous_source": result.excluded_ambiguous_source,
+        "excluded_unrefined_fallback_with_refined_sibling": (
+            result.excluded_unrefined_fallback_with_refined_sibling
+        ),
+    }

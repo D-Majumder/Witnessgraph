@@ -72,3 +72,26 @@ def track_contradictions(
             ContradictionTrackingOutcome(contradiction=stored, newly_created=not pre_existing)
         )
     return tuple(outcomes)
+
+
+def tracked_contradiction_to_json(contradiction: TrackedTimeContradiction) -> dict[str, object]:
+    """A plain dict tree for one ``TrackedTimeContradiction`` -- pass to
+    ``core.ids.canonical_json_bytes`` for encoding, exactly like
+    ``correlate.graph``'s own ``*_to_json`` builders.
+
+    Deliberately no ``still_reproduced`` field -- see this class's own
+    module docstring and ``correlate.tracking.tracked_finding_to_json``'s
+    docstring for the parallel case that DOES have one: a genuinely
+    detected contradiction is reproducible with certainty by every
+    future run, so such a field would always read ``true`` and convey no
+    information.
+    """
+    return {
+        "id": contradiction.id,
+        "subject_event_id": contradiction.subject_event_id,
+        "assertion_ids": list(contradiction.assertion_ids),
+        "status": contradiction.status.value,
+        "annotated_by": contradiction.annotated_by,
+        "annotated_at": contradiction.annotated_at,
+        "note": contradiction.note,
+    }

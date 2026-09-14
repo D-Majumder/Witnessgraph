@@ -20,9 +20,16 @@ from witnessgraph.core.relationships import Relationship
 from witnessgraph.core.time_model import TimeAssertion, TimePrecision
 from witnessgraph.core.tracked_finding import FindingStatus, TrackedGapFinding
 from witnessgraph.core.tracked_time_contradiction import TrackedTimeContradiction
-from witnessgraph.correlate.contradiction_tracking import track_contradictions
-from witnessgraph.correlate.contradictions import detect_time_contradictions
-from witnessgraph.correlate.gaps import DEFAULT_MIN_CORROBORATING_EVENTS, find_gaps
+from witnessgraph.correlate.contradiction_tracking import (
+    track_contradictions,
+    tracked_contradiction_to_json,
+)
+from witnessgraph.correlate.contradictions import contradictions_to_json, detect_time_contradictions
+from witnessgraph.correlate.gaps import (
+    DEFAULT_MIN_CORROBORATING_EVENTS,
+    find_gaps,
+    gap_analysis_to_json,
+)
 from witnessgraph.correlate.graph import (
     DEFAULT_NEIGHBORS_MAX_DEPTH,
     DEFAULT_PATH_MAX_DEPTH,
@@ -45,7 +52,11 @@ from witnessgraph.correlate.graph import (
     path_result_to_json,
     resolve_entity,
 )
-from witnessgraph.correlate.tracking import is_still_reproduced, track_findings
+from witnessgraph.correlate.tracking import (
+    is_still_reproduced,
+    track_findings,
+    tracked_finding_to_json,
+)
 from witnessgraph.ingest.base import SourceDescriptor
 from witnessgraph.ingest.pipeline import ingest_source
 from witnessgraph.ingest.registry import get_adapter, list_adapters
@@ -756,12 +767,39 @@ def contradictions(
             "nothing is persisted."
         ),
     ),
+    output_format: str = typer.Option(
+        "text", "--format", help="Output format: 'text' (default) or 'json'."
+    ),
 ) -> None:
     """Report structural TimeAssertion contradictions found in a case."""
+    if output_format not in ("text", "json"):
+        raise typer.BadParameter(
+            f"unsupported --format {output_format!r}; only 'text' or 'json' is supported"
+        )
     case = _open_case_or_fail(case_dir)
     # The full, read-only detection always completes before any
     # persistence is attempted -- see track_contradictions's docstring.
     found = detect_time_contradictions(case.store)
+    tracked_summary: dict[str, object] | None = None
+    if track:
+        # Persistence only, after the complete read-only detection above --
+        # one transaction covers every new row this invocation creates.
+        with case.transaction():
+            outcomes = track_contradictions(case.store, found)
+        new_count = sum(1 for o in outcomes if o.newly_created)
+        already_tracked = len(outcomes) - new_count
+        tracked_summary = {"new": new_count, "already_tracked": already_tracked}
+
+    if output_format == "json":
+        doc: dict[str, object] = {
+            "contradictions": contradictions_to_json(found),
+            "tracked": tracked_summary,
+        }
+        case.close()
+        sys.stdout.buffer.write(canonical_json_bytes(doc))
+        sys.stdout.buffer.flush()
+        return
+
     if not found:
         typer.echo("no contradictions found")
     for c in found:
@@ -770,15 +808,10 @@ def contradictions(
             f"{c.assertion_a.value.isoformat()} ({c.assertion_a.source_evidence_id}) vs "
             f"{c.assertion_b.value.isoformat()} ({c.assertion_b.source_evidence_id})"
         )
-    if track:
-        # Persistence only, after the complete read-only detection above --
-        # one transaction covers every new row this invocation creates.
-        with case.transaction():
-            outcomes = track_contradictions(case.store, found)
-        new_count = sum(1 for o in outcomes if o.newly_created)
-        already_tracked = len(outcomes) - new_count
+    if tracked_summary is not None:
         typer.echo(
-            f"tracked: {new_count} new contradiction(s), {already_tracked} already tracked"
+            f"tracked: {tracked_summary['new']} new contradiction(s), "
+            f"{tracked_summary['already_tracked']} already tracked"
         )
     case.close()
 
@@ -826,6 +859,9 @@ def gaps(
             "nothing is persisted."
         ),
     ),
+    output_format: str = typer.Option(
+        "text", "--format", help="Output format: 'text' (default) or 'json'."
+    ),
 ) -> None:
     """Report deterministic cross-source evidence coverage gaps.
 
@@ -843,6 +879,10 @@ def gaps(
             "evidence (see docs/phase5-v0.5-gap-analysis-design.md §7/§23)",
             param_hint="--min-corroborating-events",
         )
+    if output_format not in ("text", "json"):
+        raise typer.BadParameter(
+            f"unsupported --format {output_format!r}; only 'text' or 'json' is supported"
+        )
     case = _open_case_or_fail(case_dir)
     # The full, read-only analysis always completes before any persistence
     # is attempted -- see track_findings's docstring and the design's
@@ -853,6 +893,28 @@ def gaps(
         min_corroborating_events=min_corroborating_events,
         refine_source_by_attribute=refine_source_by_attribute,
     )
+    tracked_summary: dict[str, object] | None = None
+    if track:
+        # Persistence only, after the complete read-only analysis above --
+        # one transaction covers every new row this invocation creates.
+        with case.transaction():
+            outcomes = track_findings(
+                case.store,
+                result,
+                min_gap_seconds=min_gap_seconds,
+                min_corroborating_events=min_corroborating_events,
+            )
+        new_count = sum(1 for o in outcomes if o.newly_created)
+        already_tracked = len(outcomes) - new_count
+        tracked_summary = {"new": new_count, "already_tracked": already_tracked}
+
+    if output_format == "json":
+        doc: dict[str, object] = {**gap_analysis_to_json(result), "tracked": tracked_summary}
+        case.close()
+        sys.stdout.buffer.write(canonical_json_bytes(doc))
+        sys.stdout.buffer.flush()
+        return
+
     if result.refine_source_by_attribute is not None:
         typer.echo(
             f"source identity refined by attribute `{result.refine_source_by_attribute}` "
@@ -889,19 +951,11 @@ def gaps(
         )
     typer.echo(excluded_summary)
 
-    if track:
-        # Persistence only, after the complete read-only analysis above --
-        # one transaction covers every new row this invocation creates.
-        with case.transaction():
-            outcomes = track_findings(
-                case.store,
-                result,
-                min_gap_seconds=min_gap_seconds,
-                min_corroborating_events=min_corroborating_events,
-            )
-        new_count = sum(1 for o in outcomes if o.newly_created)
-        already_tracked = len(outcomes) - new_count
-        typer.echo(f"tracked: {new_count} new finding(s), {already_tracked} already tracked")
+    if tracked_summary is not None:
+        typer.echo(
+            f"tracked: {tracked_summary['new']} new finding(s), "
+            f"{tracked_summary['already_tracked']} already tracked"
+        )
     case.close()
 
 
@@ -1399,7 +1453,12 @@ def _format_tracked_finding_summary(finding: TrackedGapFinding, still_reproduced
 
 
 @findings_app.command("list")
-def findings_list(case_dir: Path = typer.Argument(..., help="Case directory to inspect.")) -> None:
+def findings_list(
+    case_dir: Path = typer.Argument(..., help="Case directory to inspect."),
+    output_format: str = typer.Option(
+        "text", "--format", help="Output format: 'text' (default) or 'json'."
+    ),
+) -> None:
     """List every tracked (persisted) gap-analysis finding.
 
     ``status`` reflects an analyst's review process only -- ``reviewed``
@@ -1409,8 +1468,27 @@ def findings_list(case_dir: Path = typer.Argument(..., help="Case directory to i
     evidence, using each finding's own originally recorded analysis
     parameters, and is never itself persisted.
     """
+    if output_format not in ("text", "json"):
+        raise typer.BadParameter(
+            f"unsupported --format {output_format!r}; only 'text' or 'json' is supported"
+        )
     case = _open_case_or_fail(case_dir)
     tracked = case.store.list_tracked_findings()
+
+    if output_format == "json":
+        doc = {
+            "findings": [
+                tracked_finding_to_json(
+                    finding, still_reproduced=is_still_reproduced(case.store, finding)
+                )
+                for finding in sorted(tracked, key=lambda t: t.id)
+            ]
+        }
+        case.close()
+        sys.stdout.buffer.write(canonical_json_bytes(doc))
+        sys.stdout.buffer.flush()
+        return
+
     if not tracked:
         typer.echo("no tracked findings")
         case.close()
@@ -1425,10 +1503,25 @@ def findings_list(case_dir: Path = typer.Argument(..., help="Case directory to i
 def findings_show(
     case_dir: Path = typer.Argument(..., help="Case directory to inspect."),
     finding_id: str = typer.Argument(..., help="Tracked finding id, from `findings list`."),
+    output_format: str = typer.Option(
+        "text",
+        "--format",
+        help=(
+            "Output format: 'text' (default -- a JSON dump of the finding "
+            "followed by a separate 'still reproduced' text line, exactly "
+            "as before this option existed) or 'json' (one structured "
+            "document with 'still_reproduced' as a real field, requiring "
+            "no second line to parse)."
+        ),
+    ),
 ) -> None:
     """Show the full detail of one tracked finding, including its live
     "still reproduced" state (see `findings list`'s help for what that
     means and does not mean)."""
+    if output_format not in ("text", "json"):
+        raise typer.BadParameter(
+            f"unsupported --format {output_format!r}; only 'text' or 'json' is supported"
+        )
     case = _open_case_or_fail(case_dir)
     finding = case.store.get_tracked_finding(finding_id)
     if finding is None:
@@ -1437,6 +1530,13 @@ def findings_show(
         raise typer.Exit(1)
     still_reproduced = is_still_reproduced(case.store, finding)
     case.close()
+
+    if output_format == "json":
+        doc = tracked_finding_to_json(finding, still_reproduced=still_reproduced)
+        sys.stdout.buffer.write(canonical_json_bytes(doc))
+        sys.stdout.buffer.flush()
+        return
+
     typer.echo(finding.model_dump_json(indent=2))
     typer.echo(f"still reproduced by current evidence: {'yes' if still_reproduced else 'no'}")
 
@@ -1513,6 +1613,9 @@ def _format_tracked_contradiction_summary(contradiction: TrackedTimeContradictio
 @contradiction_findings_app.command("list")
 def contradiction_findings_list(
     case_dir: Path = typer.Argument(..., help="Case directory to inspect."),
+    output_format: str = typer.Option(
+        "text", "--format", help="Output format: 'text' (default) or 'json'."
+    ),
 ) -> None:
     """List every tracked (persisted) time-contradiction finding.
 
@@ -1521,8 +1624,24 @@ def contradiction_findings_list(
     adjudicated, or that either assertion is more correct. Witnessgraph
     does not determine which disagreeing assertion is true.
     """
+    if output_format not in ("text", "json"):
+        raise typer.BadParameter(
+            f"unsupported --format {output_format!r}; only 'text' or 'json' is supported"
+        )
     case = _open_case_or_fail(case_dir)
     tracked = case.store.list_tracked_contradictions()
+
+    if output_format == "json":
+        doc = {
+            "contradictions": [
+                tracked_contradiction_to_json(c) for c in sorted(tracked, key=lambda t: t.id)
+            ]
+        }
+        case.close()
+        sys.stdout.buffer.write(canonical_json_bytes(doc))
+        sys.stdout.buffer.flush()
+        return
+
     if not tracked:
         typer.echo("no tracked contradictions")
         case.close()

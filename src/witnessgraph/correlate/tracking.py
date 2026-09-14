@@ -107,3 +107,39 @@ def is_still_reproduced(store: Store, tracked: TrackedGapFinding) -> bool:
     )
     current_ids = {finding_identity(f) for f in fresh.findings}
     return tracked.id in current_ids
+
+
+def tracked_finding_to_json(
+    finding: TrackedGapFinding, *, still_reproduced: bool
+) -> dict[str, object]:
+    """A plain dict tree for one ``TrackedGapFinding`` -- pass to
+    ``core.ids.canonical_json_bytes`` for encoding, exactly like
+    ``correlate.graph``'s own ``*_to_json`` builders.
+
+    ``still_reproduced`` is never a field on ``TrackedGapFinding`` itself
+    (see :func:`is_still_reproduced`'s docstring: it is live-recomputed,
+    never persisted) -- this function's caller is responsible for
+    computing it fresh and passing it in; this is the one place the two
+    facts (the persisted row, and today's live reproducibility) are
+    folded into a single structured document, so a consumer never has to
+    separately parse a trailing, unstructured text line to get both.
+    """
+    return {
+        "id": finding.id,
+        "absent_source": finding.absent_source,
+        "present_source": finding.present_source,
+        "absent_source_refinement": finding.absent_source_refinement,
+        "present_source_refinement": finding.present_source_refinement,
+        "interval_start": finding.interval_start,
+        "interval_end": finding.interval_end,
+        "corroborating_time_assertion_ids": list(finding.corroborating_time_assertion_ids),
+        "bounding_absent_assertion_ids": list(finding.bounding_absent_assertion_ids),
+        "min_gap_seconds": finding.min_gap_seconds,
+        "min_corroborating_events": finding.min_corroborating_events,
+        "refine_source_by_attribute": finding.refine_source_by_attribute,
+        "status": finding.status.value,
+        "annotated_by": finding.annotated_by,
+        "annotated_at": finding.annotated_at,
+        "note": finding.note,
+        "still_reproduced": still_reproduced,
+    }

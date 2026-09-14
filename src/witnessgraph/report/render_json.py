@@ -47,9 +47,10 @@ from typing import TYPE_CHECKING, Any
 from witnessgraph.core.events import NormalizedEvent
 from witnessgraph.core.ids import canonical_json_bytes
 from witnessgraph.core.time_model import TimeAssertion
-from witnessgraph.correlate.contradictions import TimeContradiction, detect_time_contradictions
-from witnessgraph.correlate.gaps import GapAnalysisResult
-from witnessgraph.correlate.tracking import is_still_reproduced
+from witnessgraph.correlate.contradiction_tracking import tracked_contradiction_to_json
+from witnessgraph.correlate.contradictions import contradictions_to_json, detect_time_contradictions
+from witnessgraph.correlate.gaps import GapAnalysisResult, gap_analysis_to_json
+from witnessgraph.correlate.tracking import is_still_reproduced, tracked_finding_to_json
 
 if TYPE_CHECKING:
     from witnessgraph.core.provenance import ProvenanceManifest
@@ -216,118 +217,32 @@ def _build_hypotheses(store: Store) -> list[dict[str, Any]]:
     ]
 
 
-def _assertion_summary(assertion: TimeAssertion) -> dict[str, Any]:
-    return {
-        "id": assertion.id,
-        "value": assertion.value,
-        "precision": assertion.precision.value,
-        "source_evidence_id": assertion.source_evidence_id,
-    }
-
-
 def _build_contradictions(store: Store) -> list[dict[str, Any]]:
-    found: list[TimeContradiction] = sorted(
-        detect_time_contradictions(store),
-        key=lambda c: (c.subject_event_id, c.assertion_a.id, c.assertion_b.id),
-    )
-    result = []
-    for c in found:
-        # Always exactly 2, ascending by id -- mirrors TrackedTimeContradiction's
-        # own canonicalization (v0.8); defensive sort, not reliant on the
-        # detector's incidental pairing order.
-        ordered = sorted([c.assertion_a, c.assertion_b], key=lambda a: a.id)
-        result.append(
-            {
-                "subject_event_id": c.subject_event_id,
-                "assertions": [_assertion_summary(a) for a in ordered],
-            }
-        )
-    return result
+    # contradictions_to_json applies its own defensive, independent sort
+    # (see its docstring) -- detect_time_contradictions's own return
+    # order is not independently guaranteed.
+    return contradictions_to_json(detect_time_contradictions(store))
 
 
 def _build_coverage_gaps(result: GapAnalysisResult) -> dict[str, Any]:
-    return {
-        "refine_source_by_attribute": result.refine_source_by_attribute,
-        "findings": [
-            {
-                "absent_source": f.absent_source,
-                "present_source": f.present_source,
-                "absent_source_refinement": f.absent_source_refinement,
-                "present_source_refinement": f.present_source_refinement,
-                "interval_start": f.interval_start,
-                "interval_end": f.interval_end,
-                "corroborating_time_assertion_ids": list(f.corroborating_time_assertion_ids),
-                # Order-significant [start, end] bracket -- NEVER sorted,
-                # unlike the contradiction-assertion pairs above.
-                "bounding_absent_assertion_ids": list(f.bounding_absent_assertion_ids),
-            }
-            for f in result.findings
-        ],
-        "excluded_no_time_assertion": result.excluded_no_time_assertion,
-        "excluded_no_declared_source": result.excluded_no_declared_source,
-        "excluded_ambiguous_source": result.excluded_ambiguous_source,
-        "excluded_unrefined_fallback_with_refined_sibling": (
-            result.excluded_unrefined_fallback_with_refined_sibling
-        ),
-    }
+    return gap_analysis_to_json(result)
 
 
 def _build_tracked_findings(store: Store) -> list[dict[str, Any]]:
     findings = sorted(store.list_tracked_findings(), key=lambda t: t.id)
-    result = []
-    for finding in findings:
-        result.append(
-            {
-                "id": finding.id,
-                "absent_source": finding.absent_source,
-                "present_source": finding.present_source,
-                "absent_source_refinement": finding.absent_source_refinement,
-                "present_source_refinement": finding.present_source_refinement,
-                "interval_start": finding.interval_start,
-                "interval_end": finding.interval_end,
-                "corroborating_time_assertion_ids": list(
-                    finding.corroborating_time_assertion_ids
-                ),
-                "bounding_absent_assertion_ids": list(finding.bounding_absent_assertion_ids),
-                "min_gap_seconds": finding.min_gap_seconds,
-                "min_corroborating_events": finding.min_corroborating_events,
-                "refine_source_by_attribute": finding.refine_source_by_attribute,
-                "status": finding.status.value,
-                "annotated_by": finding.annotated_by,
-                "annotated_at": finding.annotated_at,
-                "note": finding.note,
-                # Live-recomputed, never persisted -- see TrackedGapFinding/
-                # correlate.tracking.is_still_reproduced. Deterministic for
-                # fixed case state; can legitimately differ between two
-                # calls separated by an intervening ingest.
-                "still_reproduced": is_still_reproduced(store, finding),
-            }
-        )
-    return result
+    # still_reproduced is live-recomputed, never persisted -- see
+    # TrackedGapFinding / correlate.tracking.is_still_reproduced.
+    # Deterministic for fixed case state; can legitimately differ between
+    # two calls separated by an intervening ingest.
+    return [
+        tracked_finding_to_json(f, still_reproduced=is_still_reproduced(store, f))
+        for f in findings
+    ]
 
 
 def _build_tracked_contradictions(store: Store) -> list[dict[str, Any]]:
-    # Deliberately NO "still_reproduced" field -- see this module's
-    # docstring and TrackedTimeContradiction's own module docstring: a
-    # genuinely detected contradiction is reproducible with certainty by
-    # every future run under this codebase's append-only TimeAssertion
-    # model, so such a field would always read true and convey no
-    # information (the same v0.8 adversarial finding that removed it from
-    # Markdown applies identically here -- JSON making it "free" to add
-    # is not a reason to reintroduce it).
     contradictions = sorted(store.list_tracked_contradictions(), key=lambda t: t.id)
-    return [
-        {
-            "id": c.id,
-            "subject_event_id": c.subject_event_id,
-            "assertion_ids": list(c.assertion_ids),
-            "status": c.status.value,
-            "annotated_by": c.annotated_by,
-            "annotated_at": c.annotated_at,
-            "note": c.note,
-        }
-        for c in contradictions
-    ]
+    return [tracked_contradiction_to_json(c) for c in contradictions]
 
 
 def build_report_json_tree(
