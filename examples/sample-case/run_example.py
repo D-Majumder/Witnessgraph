@@ -118,10 +118,14 @@ def main() -> None:
     run_cli("graph", "path", str(case_dir), user_entity_id, ip_entity_id, "--explain")
 
     # Is that chain the only one, or is the connection corroborated by
-    # more than one independent relationship chain of the same length?
-    # In this case there is exactly one -- `graph paths` reports that
-    # honestly (1 chain found, not truncated) rather than implying more.
-    run_cli("graph", "paths", str(case_dir), user_entity_id, ip_entity_id)
+    # more than one structurally distinct relationship chain of the same
+    # length? In this case there is exactly one -- `graph paths` reports
+    # that honestly (1 chain found, not truncated) rather than implying
+    # more. With --explain, "evidence independence" would compare the
+    # returned chains' underlying evidence too, but that question only
+    # applies once there is more than one chain to compare -- here it
+    # correctly reports "does not apply" rather than trivially "true".
+    run_cli("graph", "paths", str(case_dir), user_entity_id, ip_entity_id, "--explain")
 
     run_cli("timeline", str(case_dir))
     run_cli("contradictions", str(case_dir))

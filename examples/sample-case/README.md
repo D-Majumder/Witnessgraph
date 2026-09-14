@@ -41,7 +41,10 @@ the whole point (DESIGN.md principle 4).
    connected cluster. `graph path ... --explain` then resolves that same
    chain's relationship evidence and entities to their full stored
    records (source adapter/locator, entity type/identifiers), so the
-   chain is readable without a second, manual lookup.
+   chain is readable without a second, manual lookup. `graph paths
+   ... --explain` also reports evidence independence — with only one
+   chain here, it correctly says that question does not apply, rather
+   than claiming a trivial "independent".
 6. `witnessgraph timeline` — events ordered by their earliest known time.
 7. `witnessgraph contradictions` — structural TimeAssertion conflict check.
 8. `witnessgraph hypothesis propose` / `support` — an evidence-backed claim.

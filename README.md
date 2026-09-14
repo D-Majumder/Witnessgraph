@@ -77,7 +77,7 @@ store; see `DESIGN.md` for what stays out of scope by design.
 | `relationships create / list / show [--entity]` | Create and inspect directed, evidence-backed relationships (graph edges) between two entities. |
 | `graph neighbors <entity> [--max-depth] [--direction] [--explain]` | List every entity reachable from one entity within a bounded number of hops. |
 | `graph path <source> <target> [--max-depth] [--direction] [--explain]` | Find one deterministic, shortest relationship chain between two entities, with full provenance. |
-| `graph paths <source> <target> [--max-depth] [--direction] [--limit] [--explain]` | Find every relationship chain tied for shortest between two entities, up to `--limit`, with full provenance. |
+| `graph paths <source> <target> [--max-depth] [--direction] [--limit] [--explain]` | Find every relationship chain tied for shortest between two entities, up to `--limit`, with full provenance; `--explain` also reports whether the chains found are evidence-independent. |
 | `graph components [--min-size] [--explain]` | Partition every related entity into weakly-connected clusters, direction-independent. |
 | `time-assertions create` | Record one analyst's explicit, cited claim about when an event occurred. |
 | `hypothesis propose / support / contradict / list` | Manage evidence-backed hypotheses — never bare, unsupported claims. |
@@ -231,11 +231,11 @@ more: it is never itself a claim of causation, responsibility, or truth.
 
 `graph path` reports one representative shortest chain; it cannot tell
 you whether that connection is corroborated by more than one
-independent chain of relationships, or rests on a single link that one
-missing or mistaken `Relationship` would sever entirely. `witnessgraph
-graph paths` answers exactly that: every distinct chain tied for the
-same shortest (fewest-hop) length between two entities, up to
-`--limit`.
+structurally distinct chain of relationships, or rests on a single link
+that one missing or mistaken `Relationship` would sever entirely.
+`witnessgraph graph paths` answers exactly that: every distinct chain
+tied for the same shortest (fewest-hop) length between two entities, up
+to `--limit`.
 
 ```sh
 witnessgraph graph paths ./my-case <source-entity-id> <target-entity-id>
@@ -251,8 +251,8 @@ chain 1:
   step 1: <A> --[connected_to via `<rel-1>`, forward]--> <B> (derived_from: `<ev-1>`)
   step 2: <B> --[connected_to via `<rel-2>`, forward]--> <D> (derived_from: `<ev-1>`)
 chain 2:
-  step 1: <A> --[connected_to via `<rel-3>`, forward]--> <C> (derived_from: `<ev-1>`)
-  step 2: <C> --[connected_to via `<rel-4>`, forward]--> <D> (derived_from: `<ev-1>`)
+  step 1: <A> --[connected_to via `<rel-3>`, forward]--> <C> (derived_from: `<ev-2>`)
+  step 2: <C> --[connected_to via `<rel-4>`, forward]--> <D> (derived_from: `<ev-2>`)
 ```
 
 **Shortest-length chains only, still not "all paths".** A longer detour
@@ -270,13 +270,83 @@ edges that can possibly lie on a shortest chain, so enumeration never
 explores a dead end and always stops the instant `--limit` chains are
 found.
 
-**Corroboration, not confirmation.** Multiple independent shortest
-chains are a structural fact — the connection does not depend on any
-single `Relationship` — never a claim that it is therefore true,
+**Corroboration, not confirmation.** Multiple structurally distinct
+shortest chains are a structural fact — the connection does not depend
+on any single `Relationship` — never a claim that it is therefore true,
 important, or causal. A single chain is likewise never reported as
 suspect; it is simply what the evidence currently records. `graph
 paths <X> <X>` (source equals target) is trivially one zero-hop chain,
 exactly like `graph path`.
+
+**Structural multiplicity is not evidence independence.** The two
+chains above are structurally distinct — different Relationships,
+different intermediate entities — but that alone says nothing about
+whether they are backed by different evidence: both could cite the same
+`derived_from` id (e.g. one log line that happened to name both
+connections). `--explain` resolves exactly that question; see "Evidence
+independence" below.
+
+### Evidence independence (`graph paths --explain`)
+
+Counting structurally distinct chains as corroboration silently
+overclaims if two of them turn out to cite the very same underlying
+record. `witnessgraph graph paths ... --explain`, whenever 2 or more
+chains are found, additionally resolves each chain's relationships'
+`derived_from` ids down to the root `EvidenceItem` id(s) they ultimately
+trace to (following through a `NormalizedEvent`'s own `derived_from`
+where one is cited instead of an `EvidenceItem` directly), and reports
+whether any root evidence id is shared by more than one chain.
+
+```sh
+witnessgraph graph paths ./my-case <source-entity-id> <target-entity-id> --explain
+```
+
+Example text output (two evidence-independent chains):
+
+```
+evidence independence:
+  chain 1: root evidence `<ev-1>`
+  chain 2: root evidence `<ev-2>`
+  fully evidence-independent: true (no shared root evidence)
+```
+
+Example text output (two chains sharing a root `EvidenceItem`, even
+though their raw `derived_from` ids differ — e.g. one cites the
+`EvidenceItem` directly and the other cites a `NormalizedEvent` built
+from that same `EvidenceItem`):
+
+```
+evidence independence:
+  chain 1: root evidence `<ev-1>`
+  chain 2: root evidence `<ev-1>`
+  fully evidence-independent: false -- shared evidence: `<ev-1>`
+```
+
+With fewer than 2 chains found, there is nothing to compare — the text
+output says so explicitly ("only one chain -- evidence independence
+does not apply") and the JSON's `fully_evidence_independent` is `null`
+rather than a vacuous `true`. `--format json` represents the same
+analysis as data under `evidence_independence` (present only with
+`--explain`, exactly like `entities`): `chains` (each chain's index and
+its `root_evidence_ids`), `shared_evidence_ids` (every root evidence id
+cited by 2 or more chains), and `fully_evidence_independent`
+(`true`/`false`/`null`).
+
+**What this means:** an id in `shared_evidence_ids` names an
+`EvidenceItem` that backs two or more of the *returned* chains — their
+apparent structural corroboration rests, at least in part, on the same
+underlying record. **What this does NOT mean:** it is never a claim
+that a chain is therefore true, false, more important, or more
+trustworthy than another, and disjoint evidence is never itself a claim
+that a connection is "confirmed" — only that the records cited are
+distinct. It says nothing about chains beyond `--limit`/`truncated`,
+either — the verdict describes only the chains actually returned.
+
+Bounded, not a new traversal: this resolves only the `derived_from` ids
+already present in the already-bounded `paths` result, one lookup per
+id (cycle-safe, like `_bfs`, against the hypothetical case of malformed
+data forming a reference cycle) — no new depth parameter, no graph
+walking.
 
 ### Connected components
 
