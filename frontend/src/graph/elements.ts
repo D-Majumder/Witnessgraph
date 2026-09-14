@@ -5,7 +5,14 @@
 // Entity/Relationship it came from; nothing here is synthesized.
 
 import type { ElementDefinition } from 'cytoscape'
-import type { Entity, NeighborsResult, Relationship, ResolvedEntity, TraversalStep } from '../api/types'
+import type {
+  Entity,
+  GraphComponent,
+  NeighborsResult,
+  Relationship,
+  ResolvedEntity,
+  TraversalStep,
+} from '../api/types'
 
 export function displayLabel(entity: Pick<Entity, 'entity_type' | 'identifiers' | 'id'>): string {
   const keys = Object.keys(entity.identifiers)
@@ -102,6 +109,18 @@ export function egoNetworkElements(result: NeighborsResult): ElementDefinition[]
     }
   }
   return sortedById([...nodeById.values(), ...edgeById.values()])
+}
+
+/** Build elements for one focused GraphComponent (from GET /graph/components,
+ * always explain-resolved) -- renders exactly that weakly-connected
+ * cluster's own entities/relationships, nothing recomputed. */
+export function componentElements(
+  component: GraphComponent,
+  entities: Record<string, ResolvedEntity> | undefined,
+): ElementDefinition[] {
+  const nodes = component.entity_ids.map((id) => resolvedEntityToElement(id, entities?.[id]))
+  const edges = component.relationships.map(relationshipToElement)
+  return sortedById([...nodes, ...edges])
 }
 
 /** Build elements for a path/tied-shortest-paths overlay: the union of

@@ -2,9 +2,15 @@ import { useQuery } from '@tanstack/react-query'
 import type { LayoutOptions } from 'cytoscape'
 import { useMemo, useState } from 'react'
 import { getNeighbors } from '../api/client'
-import type { Entity, Relationship, ResolvedEntity, TraversalStep } from '../api/types'
+import type { Entity, GraphComponent, Relationship, ResolvedEntity, TraversalStep } from '../api/types'
 import { CytoscapeGraph } from './CytoscapeGraph'
-import { egoNetworkElements, fullGraphElements, pathOverlayElements, withHighlightClasses } from './elements'
+import {
+  componentElements,
+  egoNetworkElements,
+  fullGraphElements,
+  pathOverlayElements,
+  withHighlightClasses,
+} from './elements'
 import { baseStylesheet } from './stylesheet'
 
 /** Above this many entities, "show the whole case" becomes an explicit,
@@ -27,6 +33,9 @@ interface GraphPanelProps {
   onSelectRelationship: (id: string | null) => void
   pathOverlay: PathOverlay | null
   onClearOverlay: () => void
+  focusComponent: GraphComponent | null
+  focusComponentEntities?: Record<string, ResolvedEntity>
+  onClearComponent: () => void
 }
 
 export function GraphPanel({
@@ -38,6 +47,9 @@ export function GraphPanel({
   onSelectRelationship,
   pathOverlay,
   onClearOverlay,
+  focusComponent,
+  focusComponentEntities,
+  onClearComponent,
 }: GraphPanelProps) {
   const [mode, setMode] = useState<'full' | 'ego'>(
     entities.length <= FULL_GRAPH_WARNING_THRESHOLD ? 'full' : 'ego',
@@ -45,7 +57,11 @@ export function GraphPanel({
   const [egoDepth, setEgoDepth] = useState(1)
   const [forceFull, setForceFull] = useState(false)
 
-  const effectiveMode: 'full' | 'ego' | 'path' = pathOverlay ? 'path' : mode
+  const effectiveMode: 'full' | 'ego' | 'path' | 'component' = pathOverlay
+    ? 'path'
+    : focusComponent
+      ? 'component'
+      : mode
 
   const neighborsQuery = useQuery({
     queryKey: ['neighbors', selectedEntityId, egoDepth],
@@ -57,6 +73,9 @@ export function GraphPanel({
     if (effectiveMode === 'path' && pathOverlay) {
       return pathOverlayElements(pathOverlay.chains, pathOverlay.entities)
     }
+    if (effectiveMode === 'component' && focusComponent) {
+      return { elements: componentElements(focusComponent, focusComponentEntities), edgeChainClasses: {} }
+    }
     if (effectiveMode === 'ego' && selectedEntityId && neighborsQuery.data) {
       return { elements: egoNetworkElements(neighborsQuery.data), edgeChainClasses: {} }
     }
@@ -64,7 +83,16 @@ export function GraphPanel({
       return { elements: [], edgeChainClasses: {} }
     }
     return { elements: fullGraphElements(entities, relationships), edgeChainClasses: {} }
-  }, [effectiveMode, pathOverlay, selectedEntityId, neighborsQuery.data, entities, relationships])
+  }, [
+    effectiveMode,
+    pathOverlay,
+    focusComponent,
+    focusComponentEntities,
+    selectedEntityId,
+    neighborsQuery.data,
+    entities,
+    relationships,
+  ])
 
   const styledElements = useMemo(
     () =>
@@ -79,31 +107,44 @@ export function GraphPanel({
     if (effectiveMode === 'ego' && selectedEntityId) {
       return { name: 'breadthfirst', directed: true, spacingFactor: 1.3, roots: `#${selectedEntityId}` } as LayoutOptions
     }
-    if (effectiveMode === 'path') {
+    if (effectiveMode === 'path' || effectiveMode === 'component') {
       return { name: 'breadthfirst', directed: true, spacingFactor: 1.3 } as LayoutOptions
     }
     return { name: 'grid', spacingFactor: 1.1 } as LayoutOptions
   }, [effectiveMode, selectedEntityId])
 
   const showLargeGraphWarning =
-    mode === 'full' && !pathOverlay && entities.length > FULL_GRAPH_WARNING_THRESHOLD && !forceFull
+    mode === 'full' &&
+    !pathOverlay &&
+    !focusComponent &&
+    entities.length > FULL_GRAPH_WARNING_THRESHOLD &&
+    !forceFull
+
+  const modeLabel = pathOverlay
+    ? `Analytical overlay: ${pathOverlay.chains.length} chain(s)`
+    : focusComponent
+      ? `Component ${focusComponent.index + 1} (${focusComponent.entity_ids.length} entities)`
+      : mode === 'ego'
+        ? `Ego network (depth ${egoDepth})`
+        : 'Full case graph'
 
   return (
     <div className="graph-panel">
       <div className="graph-controls">
         <span className="graph-mode-label" data-testid="graph-mode-label">
-          {pathOverlay
-            ? `Analytical overlay: ${pathOverlay.chains.length} chain(s)`
-            : mode === 'ego'
-              ? `Ego network (depth ${egoDepth})`
-              : 'Full case graph'}
+          {modeLabel}
         </span>
         {pathOverlay && (
           <button type="button" onClick={onClearOverlay}>
-            Clear overlay -- return to graph context
+            Clear path overlay -- return to graph context
           </button>
         )}
-        {!pathOverlay && mode === 'ego' && (
+        {!pathOverlay && focusComponent && (
+          <button type="button" onClick={onClearComponent}>
+            Clear component focus -- return to graph context
+          </button>
+        )}
+        {!pathOverlay && !focusComponent && mode === 'ego' && (
           <>
             <label>
               Depth
@@ -126,7 +167,7 @@ export function GraphPanel({
             </button>
           </>
         )}
-        {!pathOverlay && mode === 'full' && selectedEntityId && (
+        {!pathOverlay && !focusComponent && mode === 'full' && selectedEntityId && (
           <button type="button" onClick={() => setMode('ego')}>
             Focus on selected entity
           </button>
@@ -138,6 +179,12 @@ export function GraphPanel({
           <button type="button" onClick={() => setForceFull(true)}>
             Show full graph anyway
           </button>
+        </div>
+      ) : elements.length === 0 ? (
+        <div className="graph-warning">
+          {effectiveMode === 'ego'
+            ? 'Select an entity to explore its neighborhood.'
+            : 'Nothing to render yet -- this case has no entities.'}
         </div>
       ) : (
         <CytoscapeGraph

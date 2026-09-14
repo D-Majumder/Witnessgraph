@@ -32,10 +32,26 @@ vi.mock('./api/client', async () => {
     listRelationships: vi.fn(),
     listContradictions: vi.fn(),
     getRelationship: vi.fn(),
+    getComponents: vi.fn(),
+    listEvidence: vi.fn(),
+    getTimeline: vi.fn(),
+    listFindings: vi.fn(),
+    listContradictionFindings: vi.fn(),
   }
 })
 
-import { getCaseOverview, getRelationship, listContradictions, listEntities, listRelationships } from './api/client'
+import {
+  getCaseOverview,
+  getComponents,
+  getRelationship,
+  getTimeline,
+  listContradictionFindings,
+  listContradictions,
+  listEntities,
+  listEvidence,
+  listFindings,
+  listRelationships,
+} from './api/client'
 
 const overview: CaseOverview = {
   case_name: 'demo-case',
@@ -87,6 +103,17 @@ describe('App', () => {
         { id: 'ev-1', kind: 'evidence_item', evidence_item: null, normalized_event: null },
       ],
     })
+    vi.mocked(getComponents).mockReset().mockResolvedValue({
+      min_size: 1,
+      total_entities_in_graph: 2,
+      total_relationships: 1,
+      total_components_found: 1,
+      components: [{ index: 0, entity_ids: ['e-a', 'e-b'], relationships }],
+    })
+    vi.mocked(listEvidence).mockReset().mockResolvedValue([])
+    vi.mocked(getTimeline).mockReset().mockResolvedValue([])
+    vi.mocked(listFindings).mockReset().mockResolvedValue([])
+    vi.mocked(listContradictionFindings).mockReset().mockResolvedValue([])
   })
 
   it('shows a loading state, then the case overview once data arrives', async () => {
@@ -143,5 +170,43 @@ describe('App', () => {
 
     expect(screen.queryByTestId('entity-detail')).not.toBeInTheDocument()
     expect(screen.getByTestId('relationship-detail')).toBeInTheDocument()
+  })
+
+  it.each([
+    ['Evidence', 'evidence-panel'],
+    ['Timeline', 'timeline-panel'],
+    ['Contradictions', 'contradictions-panel'],
+    ['Gaps', 'gaps-panel'],
+    ['Findings', 'findings-panel'],
+  ])('top-nav switches to the %s view', async (navLabel, testId) => {
+    vi.mocked(getCaseOverview).mockResolvedValue(overview)
+    vi.mocked(listEntities).mockResolvedValue(entities)
+    vi.mocked(listRelationships).mockResolvedValue(relationships)
+    const user = userEvent.setup()
+
+    renderApp()
+    await waitFor(() => expect(screen.getByTestId('case-header')).toBeInTheDocument())
+    expect(screen.getByTestId('graph-mode-label')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: navLabel }))
+
+    expect(await screen.findByTestId(testId)).toBeInTheDocument()
+    // Leaving the graph view unmounts the graph-only workspace.
+    expect(screen.queryByTestId('graph-mode-label')).not.toBeInTheDocument()
+  })
+
+  it('selecting a component from the sidebar focuses it in the graph', async () => {
+    vi.mocked(getCaseOverview).mockResolvedValue(overview)
+    vi.mocked(listEntities).mockResolvedValue(entities)
+    vi.mocked(listRelationships).mockResolvedValue(relationships)
+    const user = userEvent.setup()
+
+    renderApp()
+    await waitFor(() => expect(screen.getByTestId('case-header')).toBeInTheDocument())
+
+    await user.click(screen.getByRole('button', { name: 'Components' }))
+    await user.click(await screen.findByRole('button', { name: /Component 1/ }))
+
+    expect(screen.getByTestId('graph-mode-label')).toHaveTextContent('Component 1')
   })
 })

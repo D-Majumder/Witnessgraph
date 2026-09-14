@@ -161,3 +161,72 @@ export interface Contradiction {
   subject_event_id: string
   assertions: TimeAssertionSummary[]
 }
+
+export type FindingStatus = 'open' | 'reviewed' | 'dismissed'
+
+export interface GapFinding {
+  absent_source: string
+  present_source: string
+  absent_source_refinement: string | null
+  present_source_refinement: string | null
+  interval_start: string
+  interval_end: string
+  corroborating_time_assertion_ids: string[]
+  bounding_absent_assertion_ids: [string, string]
+}
+
+export interface GapAnalysisResult {
+  refine_source_by_attribute: string | null
+  findings: GapFinding[]
+  excluded_no_time_assertion: number
+  excluded_no_declared_source: number
+  excluded_ambiguous_source: number
+  excluded_unrefined_fallback_with_refined_sibling: number
+}
+
+export interface TrackedGapFinding {
+  id: string
+  absent_source: string
+  present_source: string
+  absent_source_refinement: string | null
+  present_source_refinement: string | null
+  interval_start: string
+  interval_end: string
+  corroborating_time_assertion_ids: string[]
+  bounding_absent_assertion_ids: [string, string]
+  min_gap_seconds: number
+  min_corroborating_events: number
+  refine_source_by_attribute: string | null
+  status: FindingStatus
+  annotated_by: string | null
+  annotated_at: string | null
+  note: string | null
+  // Live-recomputed, never persisted -- see correlate.tracking.is_still_reproduced.
+  still_reproduced: boolean
+}
+
+export interface TrackedTimeContradiction {
+  id: string
+  subject_event_id: string
+  assertion_ids: [string, string]
+  status: FindingStatus
+  annotated_by: string | null
+  annotated_at: string | null
+  note: string | null
+  // Deliberately absent from the engine's own JSON shape -- an
+  // always-true value would convey no information. Never add it here.
+}
+
+export interface TrackSummary {
+  new: number
+  already_tracked: number
+}
+
+export interface TimelineEntry {
+  id: string
+  event_type: string
+  entity_ids: string[]
+  derived_from: string[]
+  attributes: Record<string, unknown>
+  time_assertions: TimeAssertionSummary[]
+}
