@@ -12,7 +12,7 @@ from pathlib import Path
 from witnessgraph.core.events import NormalizedEvent
 from witnessgraph.core.evidence import EvidenceItem
 from witnessgraph.core.time_model import TimeAssertion, TimePrecision
-from witnessgraph.correlate.gaps import find_gaps
+from witnessgraph.correlate.gaps import find_gaps, gap_analysis_to_json
 from witnessgraph.portable import export_case, import_case
 from witnessgraph.store.case import Case
 
@@ -484,4 +484,59 @@ def test_large_but_reasonable_synthetic_dataset_completes(tmp_path: Path) -> Non
             _put(case, source_id=source_id, value=base + timedelta(minutes=i * 5 + offset))
     result = find_gaps(case.store, min_gap_seconds=60)
     assert isinstance(result.findings, tuple)  # completes without error
+    case.close()
+
+
+# -- gap_analysis_to_json -------------------------------------------------------
+
+
+def test_gap_analysis_to_json_empty_result_has_empty_findings_array(tmp_path: Path) -> None:
+    case = Case.create(tmp_path / "case")
+    result = find_gaps(case.store, min_gap_seconds=60)
+    doc = gap_analysis_to_json(result)
+    assert doc["findings"] == []
+    assert doc["refine_source_by_attribute"] is None
+    case.close()
+
+
+def test_gap_analysis_to_json_shape(tmp_path: Path) -> None:
+    case = Case.create(tmp_path / "case")
+    _put(case, source_id="host1", value=_t(9, 0))
+    _put(case, source_id="host1", value=_t(9, 40))
+    _put(case, source_id="host2", value=_t(9, 10))
+    _put(case, source_id="host2", value=_t(9, 20))
+    result = find_gaps(case.store, min_gap_seconds=60)
+    doc = gap_analysis_to_json(result)
+    assert len(doc["findings"]) == 1
+    finding = doc["findings"][0]
+    assert {
+        "absent_source", "present_source", "absent_source_refinement",
+        "present_source_refinement", "interval_start", "interval_end",
+        "corroborating_time_assertion_ids", "bounding_absent_assertion_ids",
+    } == set(finding)
+    # Order-significant [start, end] bracket, never sorted.
+    assert len(finding["bounding_absent_assertion_ids"]) == 2
+    assert doc["excluded_no_time_assertion"] == result.excluded_no_time_assertion
+    case.close()
+
+
+def test_gap_analysis_to_json_never_reorders_findings(tmp_path: Path) -> None:
+    """find_gaps already returns findings in a fixed, deterministic order
+    (see its own docstring) -- gap_analysis_to_json must preserve that
+    order exactly, never independently re-sort it."""
+    case = Case.create(tmp_path / "case")
+    _put(case, source_id="host1", value=_t(9, 0))
+    _put(case, source_id="host1", value=_t(9, 40))
+    _put(case, source_id="host2", value=_t(9, 10))
+    _put(case, source_id="host2", value=_t(9, 20))
+    _put(case, source_id="host3", value=_t(10, 0))
+    _put(case, source_id="host3", value=_t(10, 40))
+    _put(case, source_id="host4", value=_t(10, 10))
+    _put(case, source_id="host4", value=_t(10, 20))
+    result = find_gaps(case.store, min_gap_seconds=60)
+    assert len(result.findings) == 2
+    doc = gap_analysis_to_json(result)
+    assert [
+        (f["absent_source"], f["present_source"]) for f in doc["findings"]
+    ] == [(f.absent_source, f.present_source) for f in result.findings]
     case.close()

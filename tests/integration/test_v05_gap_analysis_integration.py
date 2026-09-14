@@ -5,6 +5,7 @@ Coverage Gaps section.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -239,3 +240,79 @@ def test_contradiction_and_gap_findings_coexist_independently(tmp_path: Path) ->
     assert "(none)" not in contradictions_section.split("\n\n")[0]
     assert "host1" in gaps_section
     case.close()
+
+
+# -- `--format json` -----------------------------------------------------------
+
+
+def test_gaps_format_json_shape_and_determinism(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    case = _build_case_with_gap(case_dir)
+    case.close()
+
+    args = ["gaps", str(case_dir), "--min-gap-seconds", "60", "--format", "json"]
+    first = runner.invoke(app, args)
+    second = runner.invoke(app, args)
+    assert first.exit_code == 0
+    doc = json.loads(first.stdout)
+    assert len(doc["findings"]) == 1
+    finding = doc["findings"][0]
+    assert {finding["absent_source"], finding["present_source"]} == {"host1", "host2"}
+    assert finding["absent_source_refinement"] is None
+    assert doc["refine_source_by_attribute"] is None
+    assert doc["excluded_no_time_assertion"] == 0
+    assert doc["tracked"] is None
+    assert first.stdout == second.stdout
+
+
+def test_gaps_format_json_empty_case_is_empty_array(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    case = Case.create(case_dir)
+    case.record_manifest()
+    case.close()
+
+    result = runner.invoke(
+        app, ["gaps", str(case_dir), "--min-gap-seconds", "60", "--format", "json"]
+    )
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert doc["findings"] == []
+    assert doc["tracked"] is None
+
+
+def test_gaps_format_json_with_track_reports_tracked_summary(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    case = _build_case_with_gap(case_dir)
+    case.close()
+
+    result = runner.invoke(
+        app,
+        ["gaps", str(case_dir), "--min-gap-seconds", "60", "--track", "--format", "json"],
+    )
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert doc["tracked"] == {"new": 1, "already_tracked": 0}
+
+    case = Case.open(case_dir)
+    assert len(case.store.list_tracked_findings()) == 1  # tracking still happened
+    case.close()
+
+
+def test_gaps_format_json_does_not_change_default_text(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    case = _build_case_with_gap(case_dir)
+    case.close()
+    result = runner.invoke(app, ["gaps", str(case_dir), "--min-gap-seconds", "60"])
+    assert result.exit_code == 0
+    assert "{" not in result.stdout
+
+
+def test_gaps_rejects_bad_format(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    case = Case.create(case_dir)
+    case.record_manifest()
+    case.close()
+    result = runner.invoke(
+        app, ["gaps", str(case_dir), "--min-gap-seconds", "60", "--format", "xml"]
+    )
+    assert result.exit_code != 0

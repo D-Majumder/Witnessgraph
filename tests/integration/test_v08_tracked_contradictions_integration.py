@@ -731,3 +731,118 @@ def test_genuine_v07_case_tracked_gap_rows_untouched_under_v08(tmp_path: Path) -
     raw_conn.close()
     assert "tracked_time_contradictions" in tables_after  # auto-created
     assert json.loads(row_after[0]) == tracked_finding_row  # byte-for-byte untouched
+
+
+# -- `--format json` for `contradictions`/`contradiction-findings list` -------
+
+
+def test_contradictions_format_json_shape_and_determinism(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    case = _build_contradiction_case(case_dir)
+    case.close()
+
+    args = ["contradictions", str(case_dir), "--format", "json"]
+    first = runner.invoke(app, args)
+    second = runner.invoke(app, args)
+    assert first.exit_code == 0
+    doc = json.loads(first.stdout)
+    assert len(doc["contradictions"]) == 1
+    contradiction = doc["contradictions"][0]
+    assert len(contradiction["assertions"]) == 2
+    assert contradiction["assertions"][0]["id"] < contradiction["assertions"][1]["id"]
+    assert doc["tracked"] is None  # --track not passed
+    assert first.stdout == second.stdout
+
+
+def test_contradictions_format_json_empty_case_is_empty_array(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    Case.create(case_dir).close()
+    result = runner.invoke(app, ["contradictions", str(case_dir), "--format", "json"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {"contradictions": [], "tracked": None}
+
+
+def test_contradictions_format_json_with_track_reports_tracked_summary(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    case = _build_contradiction_case(case_dir)
+    case.close()
+
+    result = runner.invoke(
+        app, ["contradictions", str(case_dir), "--track", "--format", "json"]
+    )
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert doc["tracked"] == {"new": 1, "already_tracked": 0}
+
+    case = Case.open(case_dir)
+    assert len(case.store.list_tracked_contradictions()) == 1  # tracking still happened
+    case.close()
+
+
+def test_contradictions_format_json_does_not_change_default_text(tmp_path: Path) -> None:
+    """--format json is opt-in; omitting it reproduces the exact pre-existing text."""
+    case_dir = tmp_path / "case"
+    case = _build_contradiction_case(case_dir)
+    case.close()
+    result = runner.invoke(app, ["contradictions", str(case_dir)])
+    assert result.exit_code == 0
+    assert "{" not in result.stdout  # plain text, not JSON
+
+
+def test_contradictions_rejects_bad_format(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    case = _build_contradiction_case(case_dir)
+    case.close()
+    result = runner.invoke(app, ["contradictions", str(case_dir), "--format", "xml"])
+    assert result.exit_code != 0
+
+
+def test_contradiction_findings_list_format_json_shape(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    case = _build_contradiction_case(case_dir)
+    case.close()
+    runner.invoke(app, ["contradictions", str(case_dir), "--track"])
+
+    result = runner.invoke(
+        app, ["contradiction-findings", "list", str(case_dir), "--format", "json"]
+    )
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert len(doc["contradictions"]) == 1
+    row = doc["contradictions"][0]
+    assert row["status"] == "open"
+    assert row["annotated_by"] is None
+    assert "still_reproduced" not in row  # deliberately absent -- see the module docstring
+
+
+def test_contradiction_findings_list_format_json_empty_is_empty_array(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    Case.create(case_dir).close()
+    result = runner.invoke(
+        app, ["contradiction-findings", "list", str(case_dir), "--format", "json"]
+    )
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {"contradictions": []}
+
+
+def test_contradiction_findings_list_format_json_reflects_annotation(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    case = _build_contradiction_case(case_dir)
+    case.close()
+    runner.invoke(app, ["contradictions", str(case_dir), "--track"])
+    case = Case.open(case_dir)
+    contradiction_id = case.store.list_tracked_contradictions()[0].id
+    case.close()
+    runner.invoke(
+        app,
+        ["contradiction-findings", "ack", str(case_dir), contradiction_id,
+         "--status", "dismissed", "--by", "analyst:jane", "--note", "clock skew"],
+    )
+
+    result = runner.invoke(
+        app, ["contradiction-findings", "list", str(case_dir), "--format", "json"]
+    )
+    row = json.loads(result.stdout)["contradictions"][0]
+    assert row["status"] == "dismissed"
+    assert row["annotated_by"] == "analyst:jane"
+    assert row["note"] == "clock skew"

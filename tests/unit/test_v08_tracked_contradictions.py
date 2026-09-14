@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from witnessgraph.core.tracked_finding import FindingStatus
 from witnessgraph.core.tracked_time_contradiction import TrackedTimeContradiction
+from witnessgraph.correlate.contradiction_tracking import tracked_contradiction_to_json
 from witnessgraph.store.case import Case
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
@@ -315,3 +316,38 @@ def test_tracked_contradictions_and_tracked_findings_tables_are_independent(
     assert case.store.list_tracked_findings() == []
     assert len(case.store.list_tracked_contradictions()) == 1
     case.close()
+
+
+# -- tracked_contradiction_to_json ----------------------------------------------
+
+
+def test_tracked_contradiction_to_json_shape() -> None:
+    tracked = _tracked()
+    doc = tracked_contradiction_to_json(tracked)
+    assert doc == {
+        "id": tracked.id,
+        "subject_event_id": "evt-1",
+        "assertion_ids": ["a1", "a2"],
+        "status": "open",
+        "annotated_by": None,
+        "annotated_at": None,
+        "note": None,
+    }
+
+
+def test_tracked_contradiction_to_json_has_no_still_reproduced_field() -> None:
+    """Deliberately absent -- see TrackedTimeContradiction's own module
+    docstring: it would always read true and convey no information."""
+    doc = tracked_contradiction_to_json(_tracked())
+    assert "still_reproduced" not in doc
+
+
+def test_tracked_contradiction_to_json_reflects_annotation() -> None:
+    tracked = _tracked().with_annotation(
+        status=FindingStatus.REVIEWED, annotated_by="analyst:jane",
+        annotated_at=NOW, note="looked into it",
+    )
+    doc = tracked_contradiction_to_json(tracked)
+    assert doc["status"] == "reviewed"
+    assert doc["annotated_by"] == "analyst:jane"
+    assert doc["note"] == "looked into it"

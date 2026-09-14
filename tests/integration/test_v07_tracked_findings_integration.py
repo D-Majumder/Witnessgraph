@@ -5,6 +5,7 @@ recovery, and adversarial coverage for persisted gap-finding tracking
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -652,3 +653,129 @@ def test_legacy_case_without_tracked_findings_table_opens_cleanly(tmp_path: Path
     )
     assert "## Tracked Findings" not in report
     case.close()
+
+
+# -- `--format json` for `findings list`/`findings show` -----------------------
+
+
+def test_findings_list_format_json_shape_and_determinism(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    case = _build_gap_case(case_dir)
+    case.close()
+    runner.invoke(app, ["gaps", str(case_dir), "--min-gap-seconds", "60", "--track"])
+
+    args = ["findings", "list", str(case_dir), "--format", "json"]
+    first = runner.invoke(app, args)
+    second = runner.invoke(app, args)
+    assert first.exit_code == 0
+    doc = json.loads(first.stdout)
+    assert len(doc["findings"]) == 1
+    finding = doc["findings"][0]
+    assert finding["status"] == "open"
+    assert finding["still_reproduced"] is True
+    assert first.stdout == second.stdout
+
+
+def test_findings_list_format_json_empty_case_is_empty_array(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    case = Case.create(case_dir)
+    case.record_manifest()
+    case.close()
+
+    result = runner.invoke(app, ["findings", "list", str(case_dir), "--format", "json"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {"findings": []}
+
+
+def test_findings_list_rejects_bad_format(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    case = Case.create(case_dir)
+    case.record_manifest()
+    case.close()
+    result = runner.invoke(app, ["findings", "list", str(case_dir), "--format", "xml"])
+    assert result.exit_code != 0
+
+
+def test_findings_show_format_json_folds_still_reproduced_into_one_document(
+    tmp_path: Path,
+) -> None:
+    """Unlike the default text output (a JSON dump plus a separate,
+    unstructured trailing line), --format json puts still_reproduced
+    inside the one structured document -- nothing to parse out-of-band."""
+    case_dir = tmp_path / "case"
+    case = _build_gap_case(case_dir)
+    case.close()
+    runner.invoke(app, ["gaps", str(case_dir), "--min-gap-seconds", "60", "--track"])
+    case = Case.open(case_dir)
+    finding_id = case.store.list_tracked_findings()[0].id
+    case.close()
+
+    result = runner.invoke(
+        app, ["findings", "show", str(case_dir), finding_id, "--format", "json"]
+    )
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert doc["id"] == finding_id
+    assert doc["still_reproduced"] is True
+    assert result.stdout.count("\n") == 0  # exactly one compact JSON document, no trailer
+
+
+def test_findings_show_format_json_reflects_stale_reproducibility(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    case = _build_gap_case(case_dir)
+    case.close()
+    runner.invoke(app, ["gaps", str(case_dir), "--min-gap-seconds", "60", "--track"])
+    case = Case.open(case_dir)
+    finding_id = case.store.list_tracked_findings()[0].id
+    # New corroborating evidence for host1 closes the gap -- the tracked
+    # finding no longer reproduces against current evidence.
+    _put(case, source_id="host1", value=_t(9, 15), label="new")
+    case.close()
+
+    result = runner.invoke(
+        app, ["findings", "show", str(case_dir), finding_id, "--format", "json"]
+    )
+    assert json.loads(result.stdout)["still_reproduced"] is False
+
+
+def test_findings_show_format_json_unknown_id_fails_cleanly(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    case = Case.create(case_dir)
+    case.record_manifest()
+    case.close()
+    result = runner.invoke(
+        app, ["findings", "show", str(case_dir), "nonexistent", "--format", "json"]
+    )
+    assert result.exit_code != 0
+    assert b"no such tracked finding" in result.stderr_bytes
+
+
+def test_findings_show_format_json_does_not_change_default_text(tmp_path: Path) -> None:
+    """--format json is opt-in; omitting it reproduces the exact
+    pre-existing two-part text output (JSON dump + trailing line)."""
+    case_dir = tmp_path / "case"
+    case = _build_gap_case(case_dir)
+    case.close()
+    runner.invoke(app, ["gaps", str(case_dir), "--min-gap-seconds", "60", "--track"])
+    case = Case.open(case_dir)
+    finding_id = case.store.list_tracked_findings()[0].id
+    case.close()
+
+    result = runner.invoke(app, ["findings", "show", str(case_dir), finding_id])
+    assert result.exit_code == 0
+    assert "still reproduced by current evidence: yes" in result.stdout
+    assert '"still_reproduced"' not in result.stdout  # not folded into the model dump
+
+
+def test_findings_show_rejects_bad_format(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    case = _build_gap_case(case_dir)
+    case.close()
+    runner.invoke(app, ["gaps", str(case_dir), "--min-gap-seconds", "60", "--track"])
+    case = Case.open(case_dir)
+    finding_id = case.store.list_tracked_findings()[0].id
+    case.close()
+    result = runner.invoke(
+        app, ["findings", "show", str(case_dir), finding_id, "--format", "xml"]
+    )
+    assert result.exit_code != 0

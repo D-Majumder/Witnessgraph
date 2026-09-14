@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from witnessgraph.core.tracked_finding import FindingStatus, TrackedGapFinding
 from witnessgraph.correlate.gaps import GapFinding
+from witnessgraph.correlate.tracking import tracked_finding_to_json
 from witnessgraph.store.case import Case
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
@@ -392,3 +393,34 @@ def test_list_tracked_findings_empty_on_fresh_case(tmp_path: Path) -> None:
     case = Case.create(tmp_path / "case")
     assert case.store.list_tracked_findings() == []
     case.close()
+
+
+# -- tracked_finding_to_json -----------------------------------------------
+
+
+def test_tracked_finding_to_json_includes_still_reproduced_field() -> None:
+    tracked = _tracked_from(_finding())
+    doc = tracked_finding_to_json(tracked, still_reproduced=True)
+    assert doc["id"] == tracked.id
+    assert doc["still_reproduced"] is True
+    assert doc["status"] == "open"
+
+
+def test_tracked_finding_to_json_still_reproduced_is_caller_supplied() -> None:
+    """still_reproduced is never derived from the model itself -- it is
+    whatever the caller passes, since it is a live fact the function has
+    no store access to recompute on its own."""
+    tracked = _tracked_from(_finding())
+    assert tracked_finding_to_json(tracked, still_reproduced=True)["still_reproduced"] is True
+    assert tracked_finding_to_json(tracked, still_reproduced=False)["still_reproduced"] is False
+
+
+def test_tracked_finding_to_json_reflects_annotation() -> None:
+    tracked = _tracked_from(_finding()).with_annotation(
+        status=FindingStatus.DISMISSED, annotated_by="analyst:jane",
+        annotated_at=NOW, note="benign",
+    )
+    doc = tracked_finding_to_json(tracked, still_reproduced=False)
+    assert doc["status"] == "dismissed"
+    assert doc["annotated_by"] == "analyst:jane"
+    assert doc["note"] == "benign"
