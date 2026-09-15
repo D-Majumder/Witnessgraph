@@ -4,6 +4,19 @@ Status: research evaluation only. No production code was modified to
 produce this document. Reviewed at HEAD `c0754a6926a167ca473be3d8c8095c70f59bb51a`
 (804 tests passing, `ruff`/`mypy --strict` clean at time of review).
 
+**Update:** the experiment this document's §20 recommended has since
+been built and run — see `docs/research/wg-bench.md` (WG-Bench) and
+`research/wg_bench/`. Its results confirm this document's own §5/§17
+findings empirically (an adversarial byte-distinct-same-source fixture
+does produce a mechanically "independent" verdict that does not hold up
+epistemically) and confirm §11's proposed research gap is real and
+measurable (root-evidence overlap analysis achieves a 0% false-
+corroboration rate against a 100% rate for path-count-only reasoning on
+WG-Bench's binary-classification fixture group). The rest of this
+document is left unchanged below; it reflects the state of the project
+*before* that experiment existed, which is what it was written to
+assess.
+
 This is a deliberately skeptical, external-reviewer-style read of whether
 Witnessgraph currently represents a meaningful technical/research
 contribution, or a well-engineered software system without one. Where the
