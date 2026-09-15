@@ -18,8 +18,13 @@ from research.wg_bench.v2.evaluation import FixtureEvaluationV2
 METHODS = ("baseline0", "baseline1", "baseline2", "witnessgraph")
 
 #: Fixture classes excluded from the binary-classification group and
-#: reported in their own, separate group instead.
-BINARY_EXCLUDED_CLASSES = frozenset({"PARTIAL_OVERLAP", "PARTIAL_MULTI_ROOT"})
+#: reported in their own, separate group instead. "PARTIAL_OVERLAP_COMPLEX"
+#: is a V3-only class (research.wg_bench.v3); listed here, not duplicated
+#: in a V3-local copy, so V2 and V3 share one grouping rule and V2's own
+#: results (which never contain this class) are completely unaffected.
+BINARY_EXCLUDED_CLASSES = frozenset(
+    {"PARTIAL_OVERLAP", "PARTIAL_MULTI_ROOT", "PARTIAL_OVERLAP_COMPLEX"}
+)
 
 
 def _confusion_matrix(evaluations: list[FixtureEvaluationV2], *, method: str) -> ConfusionMatrix:

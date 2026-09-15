@@ -1067,3 +1067,448 @@ Two candidates, in priority order:
 Do not extend V2's specific 4-fixture gap into a broader claim about
 Witnessgraph's overall research novelty (section 44) without first
 attempting milestone 1 above.
+
+# WG-Bench V3: Independent-Adversarial Validation
+
+V3 is exactly the milestone section 45 above recommended: an
+independently-designed attempt to break V2's result, not to extend it.
+Reproduce with `python -m research.wg_bench.v3`; implementation in
+`research/wg_bench/v3/`, tests in `tests/unit/test_wg_bench_v3.py`. No
+Witnessgraph production code (`src/witnessgraph/`, `frontend/`) was
+modified to build or run V3 -- see section 62.
+
+## 46. V2's limitation
+
+V2 found that Witnessgraph's recursive root-evidence resolution beats
+Baseline 2 (direct evidence-reference comparison, no recursion) on
+exactly 4 fixtures (section 34), all requiring one `NormalizedEvent`
+indirection hop, and section 45 named the obvious weakness: all 4 were
+authored by the same person who wrote both the production code under
+test and every prior benchmark fixture. A 4-fixture, single-author gap
+is not yet strong evidence that the distinction is real and general --
+it could be an artifact of what one analyst happened to think to test.
+
+## 47. Purpose of independent-adversarial validation
+
+V3's question, stated in the mission that produced it:
+
+> "Can an independently designed adversarial fixture reproduce the
+> apparent value of recursive root-evidence resolution using a simpler
+> method, or cause the current Witnessgraph method to fail within its
+> stated provenance-level scope?"
+
+The explicit goal is falsification, not confirmation. V3 was built with
+a standing instruction not to bias every fixture toward a Witnessgraph
+win (section 49), and the result set below keeps that promise: 6 of 12
+fixtures are TIES or true-negative/true-positive controls where Baseline
+2 performs exactly as well as Witnessgraph (section 51).
+
+## 48. Fixture-generation methodology
+
+Twelve fixtures (`research/wg_bench/v3/fixtures/`), each built from a
+topology not reused, only relabeled, from any V1/V2 fixture -- parallel
+disjoint-node branches, non-convergent 3-hop paths, single-hop parallel
+edges, and (new to V3) genuine N>1-level `NormalizedEvent` chaining and
+deliberately dangling `derived_from` ids (`research/wg_bench/v3/graph_builder.py`).
+Every fixture's `GroundTruthV2` (V2's own model, reused unmodified) was
+written by reasoning about the fixture's intended topology before ever
+running it against `analyze_paths_evidence_overlap` -- never generated
+by calling that function and copying its output, exactly as V1/V2's
+discipline required (section 5/31). `tests/unit/test_wg_bench_v3.py::test_fixture_build_matches_its_own_ground_truth`
+independently confirms every fixture's `build()` produces the graph its
+ground truth describes, for all 12 fixtures.
+
+## 49. Adversarial categories and design discipline
+
+Ten structural categories from the V3 mission (multi-level lineage,
+cross-branch shared/disjoint root, mixed root depth, high-multiplicity
+collapse/disjoint, complex partial overlap, redundant representations,
+direct-reference decoy/convergence) are each represented by exactly one
+fixture, plus two independently-authored adversarial fixtures retesting
+the provenance-vs-epistemic-independence boundary from both directions
+(section 58). Every fixture's own module docstring states its purpose
+and, honestly, its expected outcome for Baseline 2 vs. Witnessgraph --
+including the fixtures expected to tie or favor Baseline 2's equivalence
+(`cross_branch_shared_root.py`, `cross_branch_disjoint_root.py`,
+`high_multiplicity_disjoint.py`, and both adversarial fixtures), written
+*before* the benchmark was run, not adjusted afterward to match results.
+No fixture was discarded or rewritten because its result was
+unfavorable; section 51 reports exactly what every fixture produced.
+
+Nine "attack" assumptions from the mission were probed directly:
+
+| # | Assumption attacked | Fixture(s) | Result |
+| --- | --- | --- | --- |
+| 1 | Different direct ids imply different evidence | `multi_level_lineage_v3`, `mixed_root_depth`, `direct_reference_decoy`, `redundant_representations` | False -- all 4 fool Baseline 2 |
+| 2 | Different derivation branches imply different evidence | `cross_branch_shared_root` | False in principle, but this specific (no-indirection) fixture doesn't exercise it -- both methods agree |
+| 3 | Same intermediate evidence implies same root | not separately testable without breaking content-addressing (section 59) | n/a -- see limitation |
+| 4 | Recursive lineage always reaches a meaningful root | `multi_level_lineage_v3` (N=2 levels) | Holds -- BFS resolves correctly at N>1 |
+| 5 | Boolean independence is sufficient for multi-path cases | `partial_overlap_complex` | False -- confirms H3 at n=4/6 pairs (section 56) |
+| 6 | Path multiplicity correlates with corroboration | `high_multiplicity_collapse` | False -- 5 branches, 1 root |
+| 7 | Content-addressed identity captures source independence | `same_source_disjoint_root`, `byte_identical_different_source` | False, both directions (section 58) |
+| 8 | Root evidence is always semantically independent when ids differ | `same_source_disjoint_root` | False (adversarial, by design -- section 58) |
+| 9 | All provenance chains are acyclic and well-formed | investigated directly, not fixture-testable (section 59) | Acyclic by construction; malformed (dangling) is representable and handled gracefully (`direct_reference_convergence`) |
+
+## 50. Ground truth and baseline definitions
+
+V3 reuses V2's data model, evaluation harness, and all four methods
+completely unmodified: `research.wg_bench.v2.model.GroundTruthV2`,
+`research.wg_bench.v2.evaluation.evaluate_fixture`, Baseline 0
+(path-count-only), Baseline 1 (path-structure), Baseline 2 (direct
+evidence-reference, no recursion), and Witnessgraph's real, unmodified
+`find_all_shortest_paths`/`analyze_paths_evidence_overlap`. This is
+deliberate: V3's comparison is only meaningful if it uses the identical
+scoring machinery V2 used, so a difference in results reflects the
+fixtures, not a redefinition of the methods. The one change made to
+shared V2 infrastructure was non-semantic: `research/wg_bench/v2/metrics.py`'s
+`BINARY_EXCLUDED_CLASSES` set gained `"PARTIAL_OVERLAP_COMPLEX"` (a
+V3-only fixture class) so V3's complex partial-overlap fixture is
+grouped with V2's `PARTIAL_OVERLAP`/`PARTIAL_MULTI_ROOT`, not the binary
+confusion matrix -- confirmed inert for V2 by rerunning
+`python -m research.wg_bench.v2`, whose results (section 34's table)
+are byte-for-byte unchanged.
+
+## 51. Complete V3 results
+
+Reproduced from `python -m research.wg_bench.v3`; independently pinned
+by `tests/unit/test_wg_bench_v3.py`'s exact-count assertions.
+
+**Binary-classification group (n=9):**
+
+| Method | TP | FP | FN | TN | Accuracy | Precision | Recall | False-positive rate |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Baseline 0 (path-count-only) | 3 | 6 | 0 | 0 | 0.333 | 0.333 | 1.00 | **1.00** |
+| Baseline 1 (path-structure) | 3 | 6 | 0 | 0 | 0.333 | 0.333 | 1.00 | **1.00** |
+| Baseline 2 (direct evidence-reference) | 2 | 5 | 1 | 1 | 0.333 | 0.286 | 0.667 | **0.833** |
+| Witnessgraph (recursive root-evidence) | 3 | 0 | 0 | 6 | **1.00** | 1.00 | 1.00 | **0.00** |
+
+Witnessgraph's binary confusion matrix is again perfect. Baseline 2's
+false-positive rate (0.833) is *worse* on V3's binary group than V2's
+(0.571) -- not because V3 is biased against it, but because V3's binary
+group is deliberately weighted toward indirection-exercising fixtures
+(6 of 9); the true-negative/tie fixtures (`cross_branch_disjoint_root`,
+`high_multiplicity_disjoint`) land in `TN`, and Baseline 2 additionally
+produces its first-ever **false negative** in this benchmark family
+(`FN=1`, `direct_reference_convergence` -- section 53) where it wrongly
+calls a genuinely-independent case non-independent, an error direction
+neither V1 nor V2 ever observed.
+
+**Partial-overlap group (n=1):** `partial_overlap_complex` -- see
+section 56.
+
+**Adversarial group (n=2):** `same_source_disjoint_root`,
+`byte_identical_different_source` -- both methods agree with the
+(correct, provenance-level) ground truth on both; see section 58.
+
+**Determinism:** 12/12 fixtures (100%) produced byte-identical manifest
+hashes and canonical JSON across two independent in-process builds
+(`tests/unit/test_wg_bench_v3.py::test_fixture_is_deterministic_across_independent_builds`).
+Additionally, two independent, separate process invocations of
+`python -m research.wg_bench.v3 --out-dir <dir>` from the same
+repository state produced byte-identical `results.json` and
+`results.txt` (verified manually; not itself a CI-enforced check, same
+as V1/V2's equivalent whole-run verification).
+
+## 52. Discriminator analysis
+
+`research/wg_bench/v3/metrics.py` adds five counts over the 12 fixtures
+(computed only where the binary question applies -- all 12 here):
+
+| Metric | Value |
+| --- | --- |
+| `discriminator_count` (Baseline 2 != Witnessgraph) | 6 |
+| `correct_discriminator_count` (of those, Witnessgraph right, Baseline 2 wrong) | 6 |
+| `baseline_equivalence_count` (both correct, same verdict) | 6 |
+| `adversarial_defeat_count` (Baseline 2 >= Witnessgraph) | 6 |
+| `witnessgraph_error_count` (Witnessgraph wrong vs. ground truth, in-scope) | **0** |
+
+Every one of the 6 discriminating fixtures favors Witnessgraph
+(`correct_discriminator_count == discriminator_count`); Baseline 2 never
+wins outright and Witnessgraph is never wrong in-scope. But exactly half
+(6/12) of all binary-applicable fixtures are ties/equivalences by
+design -- V3 did not find a case that defeats Witnessgraph, but it also
+did not find that Witnessgraph "always wins": on any fixture without
+`NormalizedEvent` indirection, Baseline 2 matches it exactly.
+
+## 53. Baseline 2 vs. Witnessgraph: fixture-by-fixture outcome
+
+Every V3 fixture, explicitly, per the mission's requirement not to hide
+negative results:
+
+| Fixture | Outcome | Note |
+| --- | --- | --- |
+| `v3-multi-level-lineage-01` | **Witnessgraph wins** | True N=2-level chaining (section 59) |
+| `v3-cross-branch-shared-root-01` | **Tie** (both correct) | No indirection anywhere |
+| `v3-cross-branch-disjoint-root-01` | **Tie** (both correct) | No indirection anywhere |
+| `v3-mixed-root-depth-01` | **Witnessgraph wins** | 0-vs-1-level depth mismatch |
+| `v3-high-multiplicity-collapse-01` | **Witnessgraph wins** | 5 branches, 15 events, 1 root |
+| `v3-high-multiplicity-disjoint-01` | **Tie** (both correct) | 5 branches, 5 disjoint roots |
+| `v3-partial-overlap-complex-01` | **Tie** (both correct) | No indirection; H3 case, not a B2-vs-WG case (section 56) |
+| `v3-redundant-representations-01` | **Witnessgraph wins** | Minimal single-hop case |
+| `v3-direct-reference-decoy-01` | **Witnessgraph wins** | Non-convergent 3-hop paths |
+| `v3-direct-reference-convergence-01` | **Witnessgraph wins** | Baseline 2's error is a false NEGATIVE here (dangling-id decoy), the only such case in this benchmark family |
+| `v3-same-source-disjoint-root-01` | **Tie** (both correct at provenance level; adversarial) | Ground truth is not "ambiguous" -- it is deliberately two-layered: provenance-correct, epistemically limited (section 58) |
+| `v3-byte-identical-different-source-01` | **Tie** (both correct at provenance level; adversarial) | Same two-layered structure, opposite direction (section 58) |
+
+No fixture produced an outcome outside Witnessgraph's stated scope in
+the sense of an actual wrong answer; the two adversarial fixtures are
+correct-but-insufficient (section 58), not incorrect. No fixture was
+excluded or rewritten to avoid an unfavorable result.
+
+## 54. H1 reassessment
+
+**H1** ("root-evidence overlap analysis reduces false-corroboration
+classifications relative to path-count-only reasoning") **remains
+supported**, unchanged from V1/V2 (sections 35, still subject to the
+same Baseline-0-circularity caveat from section 26/49 of this document:
+every binary fixture across all three benchmark generations was built
+with path multiplicity by construction).
+
+## 55. H1b reassessment -- the critical hypothesis
+
+**H1b** ("recursive root-evidence resolution provides measurable
+classification information beyond direct evidence-reference comparison")
+was V2's finding on 4 self-authored fixtures. V3 does not merely repeat
+that claim -- it actively tried to break it (section 47) with 12
+independently-constructed, structurally novel fixtures, including 6
+explicitly not expected to favor Witnessgraph. Result:
+**H1b is confirmed, not merely repeated** -- 6 new, independently
+designed discriminating fixtures found, all correctly favoring
+Witnessgraph, `witnessgraph_error_count = 0`, and the new discriminating
+mechanisms (N=2-level chaining, depth mismatch, non-convergent
+topology, single-hop parallel representations, and a dangling-reference
+decoy that fools Baseline 2 in the *opposite* error direction from every
+other case) are not id-relabelings of V2's 4 fixtures -- they are
+genuinely different structural triggers for the same underlying
+mechanism (recursive resolution past the first `derived_from` id).
+V3 did not find a case where Baseline 2 outright defeats Witnessgraph.
+It did, honestly, find that half of all adversarially-constructed
+binary fixtures are ties -- the gap is real but still confined to
+`NormalizedEvent`-indirection cases specifically, exactly as V2's
+section 44 "MODERATE SIGNAL" framing already predicted; V3 raises
+confidence in that framing without broadening it.
+
+## 56. H3 reassessment
+
+**H3** ("the Boolean/null result loses pairwise information in
+partial-overlap cases") is **reconfirmed at a larger, independently
+designed scale**. `partial_overlap_complex` (P1={R1,R2}, P2={R2,R3},
+P3={R3,R4}, P4={R5}; direct evidence only, no indirection) has 4 chains
+/ 6 pairs, of which 4 (66.7%) are genuinely root-evidence-disjoint, but
+the single top-level boolean is `False` (some pair overlaps) and masks
+all 4. This is the identical 66.7% rate both V1's 3-chain and V2's
+6-chain partial-overlap fixtures already found (section 39's table) --
+now confirmed a third, independent time, at n=6 pairs, by a different
+author's fixture design. Because this fixture cites evidence directly
+(no `NormalizedEvent`), Baseline 2's own boolean loses the exact same
+information Witnessgraph's does (`direct_pairs_masked_by_boolean == 4`,
+identical to `root_pairs_masked_by_boolean`) -- H3 is a representation
+question, orthogonal to the recursive-resolution question H1b asks, and
+this fixture was specifically designed to isolate that.
+
+## 57. Recursive root-evidence value: precise conditions
+
+**Where Witnessgraph adds value** (section 53's "Witnessgraph wins"
+rows, 6/12 fixtures): exactly, and only, when at least one returned
+chain's relationships cite a `derived_from` id that itself requires
+resolving through a `NormalizedEvent` (one level, per V2, or more, per
+`multi_level_lineage_v3` -- section 59) before reaching the id(s) that
+determine whether two chains share evidence, in a topology where two
+chains' *unresolved* ids differ but their *resolved* roots coincide (or,
+in the convergence case, where an unresolved id coincidentally matches
+across chains but resolves to nothing).
+
+**Where it does not** (section 53's "Tie" rows, 6/12 fixtures): any
+fixture where every relevant `derived_from` id is already a root
+`EvidenceItem` id (no indirection at all) -- there, Baseline 2's direct
+reference set and Witnessgraph's root evidence set are the identical
+set by construction, and the two methods cannot disagree, regardless of
+path count, branch topology, or how many chains are involved
+(`high_multiplicity_disjoint` shows this holds at 5 branches, not just
+2). Path multiplicity and branch-topology complexity alone -- without
+indirection -- given Baseline 2 no additional opportunity to be fooled.
+
+## 58. Source-identity limitation, both directions
+
+V1/V2 established (section 11/40): root-evidence *disjointness* does
+not imply epistemic independence (`byte-distinct-same-source-01`,
+`v3-same-source-disjoint-root-01` here as an independent retest with a
+different narrative -- two re-exported photographs of one physical
+scene, not V1's trailing-newline JSON export -- and a different
+topology). Both methods agree, correctly, that the two records are
+provenance-disjoint; the limitation is entirely outside what either
+method claims to answer.
+
+V3 adds the **mirror-image** case, not previously tested:
+`v3-byte-identical-different-source-01` shows root-evidence *sharing*
+does not imply epistemic non-independence either. Two parallel
+relationships cite the literal same `EvidenceItem` (content-addressed
+deduplication makes two byte-identical submissions collapse to one
+stored record before this analysis ever runs), while the fixture's own
+ground truth declares them, as benchmark metadata only, to represent two
+independent real-world submissions (e.g. two witnesses whose accounts
+happen to be identical). `fully_evidence_independent = False` is the
+correct provenance-level answer for both methods; the limitation is that
+"shared root" cannot, by construction, distinguish "the same record
+cited twice" from "two independent records that happen to be
+byte-identical" -- this happens upstream, at ingest-time
+content-addressing, before either method's analysis begins. No
+production change is implied or suggested; content-addressed
+deduplication is deliberate (DESIGN.md principle 1).
+
+Together, these two fixtures show the provenance/epistemic boundary is
+symmetric: neither disjoint roots nor shared roots are reliable
+epistemic-independence signals on their own, in either direction.
+
+## 59. Malformed/cyclic provenance findings
+
+**Cyclic provenance:** investigated directly against `core.events` and
+`core.relationships` (not fixture-testable, since no fixture can
+demonstrate the absence of something). Both `NormalizedEvent` and
+`Relationship` ids are content hashes of their own identity fields,
+including `derived_from` (`NormalizedEvent.identity_hash`,
+`Relationship.identity_hash`). A true cycle (`A.derived_from` contains
+`B`'s id and `B.derived_from` contains `A`'s id) is **structurally
+unconstructible** through the public model: `B`'s id can only be known
+after `B` is constructed, so `A` cannot cite it before `B` exists, and
+constructing a new object that cites `B` produces a *new*, distinct id,
+never retroactively mutating `A`. `correlate.graph._resolve_root_evidence_ids`'s
+own docstring already describes this as "cycle-safe by construction,"
+and this investigation confirms the stronger claim: cycles are not just
+handled safely if they occurred, they cannot occur at all, given
+content-addressed ids. This satisfies the mission's section 8
+instruction to document a limitation, in the direction of "this attack
+surface does not exist," rather than inventing unsupported behavior.
+
+**Malformed (dangling) provenance:** by contrast, this IS constructible
+and IS representable through the public model -- `NormalizedEvent.derived_from`
+and `Relationship.derived_from` are plain `tuple[str, ...]` fields with
+no referential-integrity check at construction time (confirmed by
+reading `core/events.py`/`core/relationships.py`'s field validators,
+which check only non-emptiness). `research/wg_bench/v3/graph_builder.py`'s
+`dangling()` constructs exactly this: a syntactically valid id never
+written to the store. `v3-direct-reference-convergence-01` demonstrates
+Witnessgraph's actual, already-existing handling is graceful:
+`_resolve_root_evidence_ids` treats a dangling id as contributing the
+empty set (via `resolve_evidence_ref`'s documented `"not_found"` kind),
+not a crash or a fabricated root -- and this graceful handling is
+exactly what lets Witnessgraph resolve that fixture correctly while
+Baseline 2 is fooled by the shared dangling id (section 53).
+
+**Also newly demonstrated (not anticipated by V2):** V2's own
+`multi_level_lineage.py` fixture states that `NormalizedEvent.derived_from`
+"cannot itself name another NormalizedEvent under any current ingest
+adapter," true for the adapters but not, this investigation found, true
+at the data-model level -- nothing in `core.events.NormalizedEvent`
+forbids it, and `_resolve_root_evidence_ids`'s BFS (a `visited` set, a
+`frontier` list, no depth limit) already handles arbitrary depth.
+`v3-multi-level-lineage-01` constructs a genuine
+`Relationship -> NormalizedEvent -> NormalizedEvent -> EvidenceItem`
+chain (N=2 levels of indirection, not V2's N=1) and confirms
+Witnessgraph resolves it correctly. This is not a production bug --
+production code behaves exactly as its own docstring already promised
+("cycle-safe," implicitly depth-unlimited) -- it is a correction to a
+benchmark comment, and a modest strengthening of section 55's H1b
+finding: the discriminating mechanism generalizes past exactly one
+indirection level.
+
+## 60. Threats to validity (V3-specific, in addition to sections 13/41)
+
+- **Still one author.** V3 was designed adversarially and against a
+  standing instruction not to bias fixtures toward Witnessgraph, and 6
+  of 12 fixtures did land as ties/negative results -- but V3 was still
+  designed by someone with full knowledge of V2's exact 4-fixture gap
+  and of `correlate.graph`'s source, not a blind, truly independent
+  third party. Section 61 recommends what a genuinely external
+  adversarial pass would need.
+- **12 fixtures is still small.** Sufficient to demonstrate the
+  discriminating mechanism generalizes past V2's original 4 cases and to
+  pin it against regression, not sufficient to estimate a reliable
+  false-corroboration rate for realistic casework (same caveat as
+  section 13's "small benchmark size").
+- **The dangling-reference decoy (`direct_reference_convergence`) is a
+  synthetic worst case.** Nothing in this repository's current ingest
+  adapters is known to produce a dangling `derived_from` id in practice;
+  this fixture demonstrates the model *permits* it and Witnessgraph
+  *handles* it gracefully, not that it is a realistic failure mode
+  analysts will actually encounter.
+- **The N=2-level chaining case (`multi_level_lineage_v3`) is similarly
+  synthetic** relative to current ingest adapters (section 59) -- a real
+  finding about the data model's capability, not a claim that today's
+  adapters produce such chains.
+- **Discriminator/tie split (6/6) is fixture-composition-dependent.**
+  Changing how many "no indirection" vs. "indirection" fixtures V3
+  happens to include would shift this exact ratio; it should be read as
+  "both outcomes are real and reproducible," not as a claim that
+  Witnessgraph wins "half the time" in any general sense.
+
+## 61. Does the research gap survive V3?
+
+**Yes.** Every one of V2's 4-fixture, single-author discriminating
+result was matched or exceeded by 6 new, independently-designed,
+structurally distinct discriminating fixtures, including a genuinely
+new error-direction case (`direct_reference_convergence`'s false
+negative) and a genuinely new depth case (`multi_level_lineage_v3`'s
+N=2 chaining) that V2 did not anticipate. `witnessgraph_error_count = 0`
+across all 12 adversarially-designed fixtures -- no case was found,
+despite deliberately trying, where Witnessgraph's actual production
+output disagrees with independently-authored ground truth within its
+stated provenance-level scope. Baseline 2 was never found to outright
+outperform Witnessgraph on any fixture.
+
+But the gap did not *widen* in scope -- it stayed exactly where V2
+found it: `NormalizedEvent` indirection, in any of its forms. On every
+fixture without indirection, including at 5x path multiplicity and 4x2
+pairwise complexity, Baseline 2 matched Witnessgraph exactly. V3
+upgrades confidence in V2's section 44 "MODERATE SIGNAL" verdict from
+"plausible, needs independent verification" to "verified against an
+honest adversarial attempt, not yet defeated" -- it does not upgrade the
+verdict itself to STRONG SIGNAL, because the discriminating condition
+remains precisely localized, not broad.
+
+## 62. Production code changes
+
+**Zero**, verified with
+`git diff d091d5b -- src/ frontend/ core/ correlate/ store/ service/ api/`
+(empty). Only `research/wg_bench/v2/metrics.py` (one non-semantic
+grouping-set addition, section 50), `research/wg_bench/v3/` (new), and
+`tests/unit/test_wg_bench_v3.py` (new) were touched. No production bug
+was found (section 59's finding is a correction to a V2 benchmark
+comment, not a production defect).
+
+## 63. What V3 does NOT establish
+
+- It does not establish that Baseline 2 can never match Witnessgraph on
+  a broader, professionally-constructed non-recursive baseline than this
+  benchmark's own Baseline 2 -- only that this specific, already-fairly-
+  designed Baseline 2 (section 29) did not, on these 12 new fixtures.
+- It does not establish real-world prevalence of `NormalizedEvent`
+  indirection, N>1-level chaining, or dangling references in actual
+  ingest pipelines (section 60).
+- It does not upgrade section 44's provenance-vs-epistemic-independence
+  scope boundary (section 58) -- if anything it sharpens it, by showing
+  the boundary runs in both directions.
+- It does not establish that a genuinely external, third-party
+  adversarial author (not this benchmark's own author, however
+  disciplined) would fail to find a case this iteration missed (section
+  60's first threat, section 64).
+- It does not change V1/V2's cross-machine/cross-OS-determinism gap
+  (still unimplemented -- section 12/45).
+
+## 64. Recommended next research milestone
+
+**Genuinely external adversarial review**, not another internally-authored
+V4. V3 closed the "single-author V2 fixtures" gap by having the same
+author try, honestly, to break their own result -- and found the result
+held, while also finding it does not broaden. The highest-value next
+step is qualitatively different: put `research/wg_bench/v1`, `v2`, and
+`v3` (or just `correlate.graph`'s public functions and the V1-V3
+result tables) in front of someone with no prior involvement in this
+benchmark or the production code, and ask them, unprompted, either to
+(a) construct a fixture that defeats Witnessgraph within its stated
+scope, or (b) construct a non-recursive baseline that matches
+Witnessgraph more broadly than this benchmark's Baseline 2. Only a
+result that survives *that* should be treated as more than "not yet
+falsified by its own author." Section 45's other candidates (CI
+determinism matrix, `examples/sample-case`-scale fixtures) remain valid
+but lower priority, unchanged from V2.
