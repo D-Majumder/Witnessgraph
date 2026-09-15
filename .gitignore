@@ -12,6 +12,7 @@ dist/
 *.wgcase
 /tmp-*/
 examples/sample-case/_run/
+research/wg_study/data/
 
 # frontend (Node/Vite)
 node_modules/
