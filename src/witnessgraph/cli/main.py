@@ -11,6 +11,16 @@ from typing import NoReturn
 
 import typer
 
+from witnessgraph.casepkg.archive import (
+    ArchiveError,
+    read_case_package_archive,
+    write_case_package_archive,
+)
+from witnessgraph.casepkg.demo import build_demo_case_package
+from witnessgraph.casepkg.exporter import export_case_package
+from witnessgraph.casepkg.importer import CasePackageError, import_case_package
+from witnessgraph.casepkg.schema import CASE_PACKAGE_SCHEMA_VERSION, CasePackage
+from witnessgraph.casepkg.validate import validate_package_bytes
 from witnessgraph.core.entities import Entity
 from witnessgraph.core.events import NormalizedEvent
 from witnessgraph.core.evidence import validate_source_id
@@ -114,6 +124,20 @@ time_assertions_app = typer.Typer(
     ),
     no_args_is_help=True,
 )
+case_package_app = typer.Typer(
+    help=(
+        "Author, validate, import, and export researcher case packages -- a "
+        "single declarative file describing a whole case's evidence, "
+        "entities, relationships, time assertions, and hypotheses, as an "
+        "alternative to running many individual `entities create`/"
+        "`relationships create`/`ingest` commands. See "
+        "docs/research/witnessgraph-case-format.md. Distinct from "
+        "`export`/`import` above, which package an *already-built* case's "
+        "raw database as a binary `.wgcase` archive; a case package is "
+        "human-authorable input, not a database dump."
+    ),
+    no_args_is_help=True,
+)
 app.add_typer(entities_app, name="entities")
 app.add_typer(relationships_app, name="relationships")
 app.add_typer(graph_app, name="graph")
@@ -121,6 +145,7 @@ app.add_typer(hypothesis_app, name="hypothesis")
 app.add_typer(findings_app, name="findings")
 app.add_typer(contradiction_findings_app, name="contradiction-findings")
 app.add_typer(time_assertions_app, name="time-assertions")
+app.add_typer(case_package_app, name="case-package")
 
 
 def _resolve_evidence_ref(case: Case, ref_id: str) -> EvidenceRef:
@@ -633,6 +658,136 @@ def import_case_cmd(
     typer.echo(f"imported {archive} -> {dest_dir}")
     if manifest:
         typer.echo(f"manifest hash: {manifest.manifest_hash}")
+
+
+def _is_archive_path(path: Path) -> bool:
+    return path.suffix == ".witnessgraph-case"
+
+
+def _load_case_package_bytes(path: Path) -> bytes:
+    """Read raw ``case.json`` bytes from ``path``, which may be a plain
+    JSON file or a ``.witnessgraph-case`` archive (auto-detected by
+    extension). Raises ``typer.Exit(1)`` with a clear message on any
+    read/format/integrity failure -- never partially reads or repairs."""
+    if not path.exists():
+        typer.echo(f"error: no such file: {path}", err=True)
+        raise typer.Exit(1)
+    if _is_archive_path(path):
+        try:
+            raw, _manifest = read_case_package_archive(path)
+        except ArchiveError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(1) from None
+        return raw
+    return path.read_bytes()
+
+
+def _write_case_package(package: CasePackage, output: Path) -> None:
+    """Write ``package`` to ``output``: a ``.witnessgraph-case`` archive
+    (with a verifiable manifest) if ``output`` has that extension, a
+    plain, human-readable JSON file otherwise."""
+    if output.exists():
+        typer.echo(f"error: {output} already exists", err=True)
+        raise typer.Exit(1)
+    raw = package.model_dump_json(indent=2).encode("utf-8")
+    if _is_archive_path(output):
+        write_case_package_archive(
+            raw,
+            schema_version=package.schema_version,
+            package_version=package.package_version,
+            output_path=output,
+        )
+    else:
+        output.write_bytes(raw)
+
+
+@case_package_app.command("init")
+def case_package_init(
+    output: Path = typer.Argument(
+        ...,
+        help=(
+            "Path to write the new demo case package to (e.g. my-case.json, "
+            "or my-case.witnessgraph-case for the archive form)."
+        ),
+    ),
+) -> None:
+    """Write a minimal, valid, clearly-labeled DEMO case package to edit as a starting point."""
+    package = build_demo_case_package()
+    _write_case_package(package, output)
+    typer.echo(f"wrote demo case package (DEMO / TEMPLATE DATA) -> {output}")
+
+
+@case_package_app.command("validate")
+def case_package_validate(
+    package_path: Path = typer.Argument(..., help="A case package (.json or .witnessgraph-case)."),
+) -> None:
+    """Validate a case package without importing it. Never modifies the file."""
+    raw = _load_case_package_bytes(package_path)
+    report_ = validate_package_bytes(raw)
+    if report_.is_valid:
+        typer.echo("VALID")
+        assert report_.package is not None
+        typer.echo(
+            f"schema_version={report_.package.schema_version} "
+            f"package_version={report_.package.package_version!r} "
+            f"evidence_items={len(report_.package.evidence_items)} "
+            f"entities={len(report_.package.entities)} "
+            f"relationships={len(report_.package.relationships)}"
+        )
+        return
+    typer.echo("INVALID", err=True)
+    for message in report_.all_messages():
+        typer.echo(f"  {message}", err=True)
+    raise typer.Exit(1)
+
+
+@case_package_app.command("import")
+def case_package_import(
+    package_path: Path = typer.Argument(..., help="A case package (.json or .witnessgraph-case)."),
+    dest_dir: Path = typer.Argument(..., help="Destination directory for the new case."),
+) -> None:
+    """Validate, then import, a case package into a brand-new case directory."""
+    raw = _load_case_package_bytes(package_path)
+    report_ = validate_package_bytes(raw)
+    if not report_.is_valid or report_.package is None:
+        typer.echo("INVALID -- not imported", err=True)
+        for message in report_.all_messages():
+            typer.echo(f"  {message}", err=True)
+        raise typer.Exit(1)
+    try:
+        case = import_case_package(report_.package, dest_dir)
+    except FileExistsError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from None
+    except CasePackageError as exc:
+        typer.echo("INVALID -- not imported", err=True)
+        for build_error in exc.errors:
+            typer.echo(f"  {build_error}", err=True)
+        raise typer.Exit(1) from None
+    manifest = case.record_manifest()
+    case.close()
+    typer.echo(f"imported {package_path} -> {dest_dir}")
+    typer.echo(f"manifest hash: {manifest.manifest_hash}")
+
+
+@case_package_app.command("export")
+def case_package_export(
+    case_dir: Path = typer.Argument(..., help="Case directory to export."),
+    output: Path = typer.Argument(
+        ..., help="Output path (.json for plain JSON, .witnessgraph-case for the archive form)."
+    ),
+    title: str = typer.Option("Exported Witnessgraph case", "--title"),
+    package_version: str = typer.Option("1.0.0", "--package-version"),
+) -> None:
+    """Export an existing case's declared contents as a case package."""
+    case = _open_case_or_fail(case_dir)
+    package = export_case_package(case, package_version=package_version, title=title)
+    case.close()
+    _write_case_package(package, output)
+    typer.echo(
+        f"exported {case_dir} -> {output} "
+        f"(case-package schema_version={CASE_PACKAGE_SCHEMA_VERSION})"
+    )
 
 
 @app.command()

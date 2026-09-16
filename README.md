@@ -88,6 +88,7 @@ scope by design. See [Web UI (v1)](#web-ui-v1) below for the UI.
 | `contradiction-findings list [--format] / show / ack` | Inspect and annotate persisted, tracked contradiction findings. |
 | `report [--format markdown\|json] [--output]` | Render a case's full investigative content as one deterministic document. |
 | `export` / `import` | Package a case into a portable `.wgcase` archive and restore it elsewhere. |
+| `case-package init / validate / import / export` | Author, validate, import, and export a declarative, human-readable case package (`case.json` or `.witnessgraph-case`) — see [Researcher edition](#researcher-edition) below. |
 | `verify [--report]` | Recompute a case's provenance manifest and confirm it matches the recorded one. |
 | `replay` | Recompute and verify a case's provenance manifest (used internally by `verify`). |
 
@@ -630,6 +631,41 @@ npm run typecheck  # tsc --noEmit
 npm run test       # vitest
 npm run build      # tsc -b && vite build
 ```
+
+## Researcher edition
+
+Witnessgraph is distributable as a local research tool: install it, bring
+your own structured case data (or start from a synthetic demo), inspect
+it through the CLI and the same local Web UI above, and export a
+reproducible case package to share with another researcher — all
+local-only, with no cloud dependency, telemetry, or mandatory
+authentication.
+
+```sh
+witnessgraph case-package init demo.json
+witnessgraph case-package validate demo.json
+witnessgraph case-package import demo.json ./demo-case
+witnessgraph-api ./demo-case   # then open the frontend as in Web UI (v1) above
+```
+
+See:
+
+- `docs/research/witnessgraph-quickstart.md` — fastest path from install
+  to an opened case.
+- `docs/research/witnessgraph-researcher-guide.md` — the full workflow:
+  installation, importing your own data, graph/provenance analysis,
+  exporting, reproducibility, privacy, and limitations.
+- `docs/research/witnessgraph-case-format.md` — the case package schema
+  reference (a `case-package init`-generated template plus every field's
+  exact meaning).
+- `research/examples/sample-researcher-case/` — a filled-in, fully
+  synthetic worked example.
+
+A case package (`case.json` / `.witnessgraph-case`) is a declarative,
+human-authorable format distinct from the binary `.wgcase` archive
+`export`/`import` already produce — see the case format doc's "two
+portable formats" section for when to use which. Both round-trip to the
+exact same provenance manifest hash on reimport.
 
 ## Testing
 

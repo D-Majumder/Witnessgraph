@@ -1,0 +1,140 @@
+{
+  "schema_version": 1,
+  "package_version": "1.0.0",
+  "case_metadata": {
+    "title": "SYNTHETIC EXAMPLE -- sample-researcher-case",
+    "description": "Fully synthetic worked example for docs/research/witnessgraph-case-format.md and docs/research/witnessgraph-researcher-guide.md. Every identifier, hostname, IP address, and username below is a made-up placeholder. No real logs, credentials, or personal data of any kind. See SECURITY.md.",
+    "created_by": "witnessgraph research/examples",
+    "created_at": "2026-01-01T09:00:00Z"
+  },
+  "evidence_items": [
+    {
+      "local_id": "ev-auth-log",
+      "content": "{\"event\": \"login\", \"user\": \"demo-user-01\", \"host\": \"demo-host-01\", \"timestamp\": \"2026-01-01T09:00:00Z\"}",
+      "content_base64": null,
+      "source_locator": "example/auth.jsonl:1",
+      "collected_at": "2026-01-01T09:00:00Z",
+      "observed_at": null,
+      "source_id": "example-host-a",
+      "ingest_parameters": {}
+    },
+    {
+      "local_id": "ev-netflow-log",
+      "content": "{\"event\": \"connection\", \"src_host\": \"demo-host-01\", \"dst_ip\": \"203.0.113.42\", \"timestamp\": \"2026-01-01T09:05:00Z\"}",
+      "content_base64": null,
+      "source_locator": "example/netflow.jsonl:1",
+      "collected_at": "2026-01-01T09:00:00Z",
+      "observed_at": null,
+      "source_id": "example-host-a",
+      "ingest_parameters": {}
+    }
+  ],
+  "normalized_events": [
+    {
+      "local_id": "ne-login",
+      "event_type": "login",
+      "derived_from": [
+        "ev-auth-log"
+      ],
+      "attributes": {
+        "user": "demo-user-01",
+        "host": "demo-host-01"
+      },
+      "created_at": "2026-01-01T09:00:00Z"
+    }
+  ],
+  "entities": [
+    {
+      "local_id": "entity-user",
+      "entity_type": "user",
+      "identifiers": {
+        "username": "demo-user-01"
+      },
+      "derived_from": [
+        "ev-auth-log"
+      ],
+      "first_seen": null,
+      "last_seen": null
+    },
+    {
+      "local_id": "entity-host",
+      "entity_type": "host",
+      "identifiers": {
+        "hostname": "demo-host-01"
+      },
+      "derived_from": [
+        "ev-auth-log",
+        "ev-netflow-log"
+      ],
+      "first_seen": null,
+      "last_seen": null
+    },
+    {
+      "local_id": "entity-ip",
+      "entity_type": "ip",
+      "identifiers": {
+        "address": "203.0.113.42"
+      },
+      "derived_from": [
+        "ev-netflow-log"
+      ],
+      "first_seen": null,
+      "last_seen": null
+    }
+  ],
+  "relationships": [
+    {
+      "local_id": null,
+      "relationship_type": "authenticated_as",
+      "source_entity": "entity-user",
+      "target_entity": "entity-host",
+      "derived_from": [
+        "ev-auth-log"
+      ],
+      "attributes": {},
+      "created_at": "2026-01-01T09:00:00Z"
+    },
+    {
+      "local_id": null,
+      "relationship_type": "connected_to",
+      "source_entity": "entity-host",
+      "target_entity": "entity-ip",
+      "derived_from": [
+        "ev-netflow-log"
+      ],
+      "attributes": {},
+      "created_at": "2026-01-01T09:00:00Z"
+    }
+  ],
+  "time_assertions": [
+    {
+      "local_id": null,
+      "subject_event": "ne-login",
+      "value": "2026-01-01T09:00:00Z",
+      "precision": "second",
+      "source_evidence": "ev-auth-log",
+      "asserted_by": "researcher:example",
+      "created_at": "2026-01-01T09:00:00Z"
+    }
+  ],
+  "hypotheses": [
+    {
+      "local_id": null,
+      "statement": "demo-user-01's login on demo-host-01 and the subsequent outbound connection to 203.0.113.42 may be related -- example hypothesis only.",
+      "status": "proposed",
+      "supporting_evidence": [
+        {
+          "kind": "evidence_item",
+          "local_id": "ev-auth-log"
+        },
+        {
+          "kind": "evidence_item",
+          "local_id": "ev-netflow-log"
+        }
+      ],
+      "contradicting_evidence": [],
+      "inferred_by": "researcher:example",
+      "created_at": "2026-01-01T09:00:00Z"
+    }
+  ]
+}

@@ -71,12 +71,46 @@ a real, useful feature for a future version — it is explicitly **not**
 implemented here, and no part of this codebase should be read as implying
 it exists.
 
+## Untrusted archive import (`.wgcase`, case packages)
+
+Both `witnessgraph import` (a `.wgcase` archive) and
+`witnessgraph case-package import`/`validate` (a `case.json` or
+`.witnessgraph-case` archive) may be handed a file from another
+researcher and must treat it as untrusted input:
+
+- **`.wgcase` import** (`witnessgraph.portable.import_case`) validates
+  every archive member's path resolves strictly inside the destination
+  directory before extracting anything (rejecting absolute paths, `..`
+  traversal, or a drive change), and enforces both a per-member and a
+  total uncompressed-size ceiling — checked from the zip's central
+  directory *before* any bytes are decompressed — to bound a
+  decompression-bomb archive's worst-case disk usage. See
+  `tests/integration/test_portable_security.py`.
+- **Case package import** (`witnessgraph.casepkg`) never calls
+  `zipfile.extractall` at all: the `.witnessgraph-case` archive format
+  reads exactly two fixed, hard-coded member names by name and ignores
+  everything else, so there is no code path that turns a zip-entry name
+  into a filesystem path in the first place. A declared archive
+  member's uncompressed size is also capped before decompression, and
+  the archive's recorded content hash is verified against the actual
+  `case.json` bytes read, so a corrupted or tampered archive is
+  detected before its contents are trusted. A case package's own
+  content (evidence bytes, object counts) is separately capped
+  (`docs/research/witnessgraph-case-format.md`'s "size and count
+  limits"), and no participant/researcher-supplied string is ever used
+  to build a filesystem path outside a case's own fixed directory
+  layout. See `tests/integration/test_portable_security.py` and
+  `tests/unit/test_casepkg_build.py`.
+
+Neither import path ever executes anything from the archive/package —
+only the documented JSON/SQLite data formats are parsed.
+
 ## Test and example data
 
-All fixtures under `tests/fixtures/` and `examples/sample-case/data/` are
-entirely synthetic, hand-authored data. No real logs, credentials, IPs,
-hostnames, or personal data of any kind are used anywhere in this
-repository.
+All fixtures under `tests/fixtures/`, `examples/sample-case/data/`, and
+`research/examples/sample-researcher-case/` are entirely synthetic,
+hand-authored data. No real logs, credentials, IPs, hostnames, or
+personal data of any kind are used anywhere in this repository.
 
 ## Reporting a vulnerability
 
