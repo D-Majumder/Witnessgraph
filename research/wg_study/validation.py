@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 
 from research.wg_study import analysis, case_builder, runner, storage
 from research.wg_study import questions as questions_module
-from research.wg_study.model import ALL_CONDITIONS, ParticipantResponse
+from research.wg_study.model import ALL_CONDITIONS, STUDY_VERSION, ParticipantResponse
 
 
 @dataclass(frozen=True)
@@ -57,6 +57,7 @@ def run_developer_validation() -> ValidationResult:
                     response_time_ms=1,
                     timestamp=datetime.now(UTC).isoformat(),
                     optional_notes=None,
+                    study_version=STUDY_VERSION,
                     is_developer_validation=True,
                 )
                 storage.append_response(response)

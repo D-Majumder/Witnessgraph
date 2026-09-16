@@ -1,24 +1,70 @@
 # WG-Study: A Controlled Analyst-Reasoning Study
 
-Status: **experimental infrastructure only. No human study has been
-conducted.** This document describes a protocol and the software built
-to run it, not a completed experiment. No production Witnessgraph code
+Status: **experimental infrastructure only, now including a credible
+local participant-facing runner. No human study has been conducted and
+no human participant data exists anywhere in this repository or its
+history.** This document describes a protocol and the software built to
+run it, not a completed experiment. No production Witnessgraph code
 (`src/witnessgraph`, `frontend/`) was modified to build this
-infrastructure. See `research/wg_study/` for the implementation and
-`tests/unit/test_wg_study.py` for its test suite.
+infrastructure. See `research/wg_study/` for the implementation,
+`tests/unit/test_wg_study.py` and
+`tests/unit/test_wg_study_pilot_package.py` for its test suite, and
+these companion documents for the participant-facing package built on
+top of this design:
+
+- `docs/research/wg-study-participant-protocol.md` — exact session
+  mechanics, what a participant sees, and every safety/isolation
+  guarantee the runner makes.
+- `docs/research/wg-study-consent-ethics.md` — draft consent text and
+  ethics-review status (explicitly not yet reviewed or approved).
+- `docs/research/wg-study-preregistration.md` — draft preregistration
+  package (sample size and statistical test family are explicitly not
+  yet decided).
 
 Reproduce the developer-validation self-check from the repository root:
 
 ```sh
 python -m research.wg_study validate
 python -m research.wg_study list-cases
+python -m research.wg_study freeze
 python -m research.wg_study analyze
 ```
 
 `analyze` will report `has_participant_data: False` and print `"No
 human-participant results were collected."` — this is correct and
 expected. No participant response file exists anywhere in this
-repository or its history.
+repository or its history (`research/wg_study/data/` is `.gitignore`d —
+see §13).
+
+## 0. Exact commands
+
+```sh
+# Researcher: pipeline self-check (no human involved, no real data written).
+python -m research.wg_study validate
+
+# Researcher: print the fixed 9-case manifest.
+python -m research.wg_study list-cases
+
+# Researcher: print the frozen study manifest (versions, seed, case-manifest hash) --
+# run this once per study version and record the output alongside any collected data.
+python -m research.wg_study freeze
+
+# Researcher/reviewer: walk through the real participant flow with correct answers
+# revealed after each response; writes only to the developer-validation file, never
+# the real participant dataset. See docs/research/wg-study-participant-protocol.md §1.
+python -m research.wg_study pilot-walkthrough
+
+# Participant: run one real session end to end.
+python -m research.wg_study run
+python -m research.wg_study run --participant-id <token>   # to resume the same assignment
+
+# Researcher: validate a collected dataset's integrity (rejects, never repairs,
+# malformed/duplicate/out-of-manifest records -- see dataset_validation.py).
+python -m research.wg_study validate-dataset
+
+# Researcher: analyze whatever real participant data currently exists.
+python -m research.wg_study analyze
+```
 
 ## 1. Research question
 
@@ -65,7 +111,7 @@ information (Condition C) on cases requiring provenance indirection.
 Neither hypothesis is confirmed, disconfirmed, or even tested by
 anything in this repository as of this document's writing. They are
 stated here, precisely, so that a future pilot has a fixed, falsifiable
-target to collect data against — see §22.
+target to collect data against — see §18/§19.
 
 ## 3. Experimental conditions
 
@@ -244,7 +290,8 @@ correct_answer        Answer   # stamped at recording time from the answer key; 
 response_time_ms      int
 timestamp             str      # ISO-8601 UTC
 optional_notes        str | None
-is_developer_validation bool   # True only for validation.py records
+study_version         str      # model.STUDY_VERSION at recording time -- see §12
+is_developer_validation bool   # True only for validation.py/session.run_pilot_walkthrough records
 ```
 
 `correct_answer` is stored on every response for later analysis — this
@@ -353,6 +400,22 @@ reasoning.
 - Software/environment: Python 3.11, this repository's `pyproject.toml`
   dependency set — identical to WG-Bench's own reproducibility baseline
   (see `docs/research/wg-bench.md`).
+- **Study-freeze manifest** (`research/wg_study/manifest.py`,
+  `python -m research.wg_study freeze`): deterministically recomputes a
+  `StudyManifest` — study version, answer-key version, case count/ids, a
+  SHA-256 hash of the canonical case manifest, condition values,
+  randomization seed and protocol description, and the Python/platform
+  version — from the current case builder and answer key.
+  `model.STUDY_VERSION` is stamped on every stored `ParticipantResponse`
+  (§8), so a collected dataset can always be checked against the exact
+  frozen package that produced it; `dataset_validation.py` rejects any
+  record whose `study_version` does not match the dataset's own declared
+  version (a "mixed study versions" dataset). Run `freeze` once per
+  study version and keep its output alongside any collected data as that
+  version's permanent record — this is WG-Study's reproducibility/
+  version-capture mechanism, standing in for a heavier snapshot/tag
+  scheme since the manifest is fully and deterministically
+  recomputable from source.
 
 ## 13. Privacy / data handling
 
@@ -372,6 +435,24 @@ reasoning.
   `CaseAnswerKey` (§12).
 - `research/wg_study/data/` is `.gitignore`d — no participant or
   developer-validation response file is committed to this repository.
+- **Dataset integrity validation.** `research/wg_study/dataset_validation.py`
+  (`python -m research.wg_study validate-dataset`) checks every raw
+  record in the participant dataset file — missing fields, mixed study
+  versions, unknown condition/case/question ids, malformed answers,
+  negative response times, and duplicate participant/case/question
+  keys — and reports each rejection with a reason. It never repairs or
+  guesses a corrected value; a malformed record is excluded and logged,
+  never silently coerced
+  (`tests/unit/test_wg_study_pilot_package.py::test_validate_dataset_never_repairs_only_rejects`).
+- **No participant-controlled filesystem paths, no command execution
+  through participant input.** The interactive runner
+  (`research/wg_study/session.py`) only ever writes to the module's
+  fixed `data/` directory (or an explicit caller-constructed `Path` in
+  tests/tooling), and only ever parses a typed answer against a fixed
+  alias table (`session._ANSWER_ALIASES`) — an unrecognized string is
+  rejected and reprompted, never executed or interpolated anywhere. See
+  `docs/research/wg-study-participant-protocol.md` §4 for the full
+  session-integrity guarantee list.
 
 ## 14. Ethics considerations
 
@@ -384,7 +465,9 @@ protocol, the study owner should determine whether applicable
 institutional or regulatory rules require ethics/IRB-equivalent review
 for this kind of task-based, anonymous, non-deceptive study, and obtain
 it if so, before recruiting anyone. This document does not substitute
-for that determination.
+for that determination. See `docs/research/wg-study-consent-ethics.md`
+for a draft consent text and risk assessment prepared for that
+review — itself explicitly marked as unreviewed and unapproved.
 
 ## 15. Threats to validity
 
@@ -426,46 +509,66 @@ for that determination.
 Before real participant collection, the following remain open and are
 explicitly out of scope for this milestone:
 
-- Participant recruitment plan and sample-size target (deferred to §10's
-  analysis-plan prerequisite).
-- A genuinely usable participant-facing interface. The current CLI
-  (`python -m research.wg_study`) is a developer/validation tool; a real
-  pilot likely wants either a more polished local CLI walkthrough or a
-  minimal local-only web page — WG-Study's architecture (`model.py`,
-  `presentation.py`, `questions.py`, `runner.py`, `storage.py`) does not
-  depend on which; only a thin new front end would be needed, with zero
-  changes to case-building, presentation, or answer-key logic.
+- Participant recruitment plan and sample-size target — the
+  preregistration draft (`docs/research/wg-study-preregistration.md`)
+  explicitly leaves §5 (sample size) and §6 (statistical test family)
+  unfilled pending this.
+- ~~A genuinely usable participant-facing interface.~~ **Done as of this
+  milestone**: `python -m research.wg_study run` is a credible local CLI
+  walkthrough (`research/wg_study/session.py`, `instructions.py`) built
+  strictly on the existing `model.py`/`presentation.py`/`questions.py`/
+  `runner.py` architecture, with zero changes to case-building,
+  presentation, or answer-key logic. See
+  `docs/research/wg-study-participant-protocol.md` for its exact
+  mechanics. A minimal local-only web page remains a possible future
+  alternative front end but is not required to run a credible pilot.
 - Ethics/IRB-equivalent review determination and, if required, approval
-  (§14).
+  (§14) — a draft consent/risk document now exists
+  (`docs/research/wg-study-consent-ethics.md`) to support that review,
+  but the review itself has not happened.
 - A pre-registered analysis plan, including the inferential-statistics
-  requirements listed in §10, decided *before* any real data is seen.
+  requirements listed in §10, decided *before* any real data is seen —
+  a draft now exists (`docs/research/wg-study-preregistration.md`) with
+  its sample-size and test-family sections explicitly left open pending
+  the decisions §5/§6 of that document describe.
 - Possibly a larger/more varied case pool (§15) if a pilot's initial
   results suggest structural-leakage risk is material.
+- An in-software consent-acknowledgment step before a real session
+  starts (`docs/research/wg-study-consent-ethics.md` §6) — the current
+  `run` command does not yet display or require acknowledgment of the
+  draft consent text.
+- A dedicated per-participant data-deletion/withdrawal command
+  (`docs/research/wg-study-consent-ethics.md` §5) — currently a manual
+  procedure.
 
 ## 17. Exact procedure for a future pilot
 
 1. Resolve §14's ethics/IRB-equivalent determination and, if required,
-   obtain approval.
-2. Fix the analysis plan (§10) in writing, before recruiting anyone,
-   including the exact statistical test(s) for A-vs-B, B-vs-C, A-vs-C,
-   and the multiple-comparison correction.
-3. Recruit participants and assign each an anonymous `participant_id`
+   obtain approval, using `docs/research/wg-study-consent-ethics.md` as
+   the starting draft.
+2. Fix the analysis plan in writing, before recruiting anyone, by
+   completing `docs/research/wg-study-preregistration.md` §5 (sample
+   size) and §6 (statistical test family, multiple-comparison
+   correction) — the sections that document currently leaves open.
+3. Run `python -m research.wg_study freeze` and keep its output as this
+   study version's permanent record (§12).
+4. Recruit participants and assign each an anonymous `participant_id`
    (no name/email stored — see §13).
-4. For each participant: `runner.assign_condition(participant_id)`
-   determines their condition;
-   `runner.case_order(participant_id, case_ids)` determines their case
-   order.
-5. Present each case in the assigned condition
-   (`presentation.present_case`), in the assigned order, generate its
-   questions (`questions.generate_questions`), and record each answer
-   with response time via `runner.record_response`
-   (`is_developer_validation=False`).
-6. After collection, run `python -m research.wg_study analyze` (or call
+5. Each participant runs `python -m research.wg_study run
+   --participant-id <token>` directly — see
+   `docs/research/wg-study-participant-protocol.md` for exactly what
+   they will see and do. This already implements condition assignment,
+   case ordering, presentation, question generation, and recording
+   end to end; no researcher intervention is needed per session beyond
+   supplying the token.
+6. Periodically run `python -m research.wg_study validate-dataset` and
+   resolve any reported rejections before proceeding further.
+7. After collection, run `python -m research.wg_study analyze` (or call
    `analysis.analyze` directly) against
    `storage.PARTICIPANT_RESPONSES_FILE`.
-7. Apply the pre-registered analysis plan from step 2 to the resulting
+8. Apply the pre-registered analysis plan from step 2 to the resulting
    per-condition metrics. Report results honestly, including a null or
-   negative result — see §22.
+   negative result — see §19.
 
 ## 18. What would support H1-Study/H2-Study
 
@@ -506,16 +609,24 @@ infrastructure.
 
 ## 20. Recommended next milestone
 
-Two independent follow-ups, in priority order:
+This milestone completed the software side of §16's prior list: a
+credible local participant-facing runner
+(`python -m research.wg_study run`), a developer/pilot walkthrough mode
+that cannot contaminate real data, a study-freeze/versioning mechanism,
+dataset-integrity validation, and draft consent/ethics and
+preregistration documents. What remains, in priority order:
 
-1. **Ethics/IRB-equivalent determination (§14) and a written,
-   pre-registered analysis plan (§10)** — the two concrete prerequisites
-   blocking any real data collection under this protocol. Both are
-   process/documentation work, not software work.
-2. **A minimal participant-facing front end** built strictly on the
-   existing `model.py`/`presentation.py`/`questions.py`/`runner.py`
-   architecture (§16) — a thin interactive layer, not a redesign of the
-   study's core logic, since that logic is already implemented, tested,
-   and developer-validated in this milestone.
+1. **Ethics/IRB-equivalent determination and approval**, using
+   `docs/research/wg-study-consent-ethics.md` as the starting draft
+   (§14) — a process/documentation step, not software work.
+2. **Complete the preregistration's open sections** —
+   `docs/research/wg-study-preregistration.md` §5 (sample size) and §6
+   (statistical test family and multiple-comparison correction),
+   decided in writing before any real data is seen.
+3. Optionally: an in-software consent-acknowledgment step and a
+   dedicated withdrawal/deletion command (both listed in
+   `docs/research/wg-study-consent-ethics.md` §6) before recruiting at
+   any scale beyond a small internal pilot.
 
-Only after both are in place should real participant recruitment begin.
+Only after (1) and (2) are in place should real participant recruitment
+begin.

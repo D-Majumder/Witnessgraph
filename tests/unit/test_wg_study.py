@@ -33,6 +33,7 @@ from research.wg_study import (
 )
 from research.wg_study.model import (
     ALL_CONDITIONS,
+    STUDY_VERSION,
     Answer,
     Condition,
     ParticipantResponse,
@@ -328,6 +329,7 @@ def test_storage_round_trip_preserves_every_field(tmp_path: Path) -> None:
         response_time_ms=4200,
         timestamp="2026-01-01T00:00:00+00:00",
         optional_notes="fast responder",
+        study_version=STUDY_VERSION,
         is_developer_validation=False,
     )
     path = storage.append_response(response, out_dir=tmp_path)
@@ -351,6 +353,7 @@ def test_storage_ignores_blank_lines(tmp_path: Path) -> None:
         response_time_ms=500,
         timestamp="2026-01-01T00:00:00+00:00",
         optional_notes=None,
+        study_version=STUDY_VERSION,
         is_developer_validation=False,
     )
     storage.append_response(response, out_dir=tmp_path)
@@ -380,6 +383,7 @@ def test_append_response_never_uses_participant_supplied_path(tmp_path: Path) ->
         response_time_ms=1,
         timestamp="2026-01-01T00:00:00+00:00",
         optional_notes=None,
+        study_version=STUDY_VERSION,
         is_developer_validation=False,
     )
     target = storage.append_response(response, out_dir=tmp_path)
@@ -408,6 +412,7 @@ def test_participant_response_schema_matches_documented_fields() -> None:
         "response_time_ms",
         "timestamp",
         "optional_notes",
+        "study_version",
         "is_developer_validation",
     }
     assert set(ParticipantResponse.__dataclass_fields__) == expected
@@ -431,6 +436,7 @@ def _make_response(
         response_time_ms=1000,
         timestamp="2026-01-01T00:00:00+00:00",
         optional_notes=None,
+        study_version=STUDY_VERSION,
         is_developer_validation=False,
     )
 
@@ -455,6 +461,7 @@ def test_analyze_excludes_developer_validation_records() -> None:
             response_time_ms=1,
             timestamp="2026-01-01T00:00:00+00:00",
             optional_notes=None,
+            study_version=STUDY_VERSION,
             is_developer_validation=True,
         )
     ]

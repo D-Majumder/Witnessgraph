@@ -70,6 +70,7 @@ def _record_to_response(raw: dict[str, Any]) -> ParticipantResponse:
         response_time_ms=int(raw["response_time_ms"]),
         timestamp=str(raw["timestamp"]),
         optional_notes=(None if raw.get("optional_notes") is None else str(raw["optional_notes"])),
+        study_version=str(raw["study_version"]),
         is_developer_validation=bool(raw["is_developer_validation"]),
     )
 

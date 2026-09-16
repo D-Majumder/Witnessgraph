@@ -30,6 +30,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+#: WG-Study's own version identifier, independent of (but currently equal
+#: in value to) ``answer_key.ANSWER_KEY_VERSION``. Recorded on every
+#: stored ``ParticipantResponse`` so a dataset can always be traced to
+#: exactly which frozen study package (case manifest, conditions,
+#: questions, answer key, randomization protocol -- see ``manifest.py``)
+#: produced it. Bumping this value is required whenever the case
+#: manifest, condition definitions, question wording, or answer key
+#: change in any way that could affect a stored response's meaning.
+STUDY_VERSION = "wg-study-v1"
+
 
 class Condition(str, Enum):
     """The three WG-Study presentation conditions (see
@@ -130,6 +140,12 @@ class ParticipantResponse:
     #: ISO-8601 UTC timestamp string.
     timestamp: str
     optional_notes: str | None
+    #: Which frozen WG-Study package version produced this response's
+    #: case manifest, conditions, questions, and answer key (see
+    #: ``manifest.py``). Lets a future analysis detect and reject a
+    #: dataset mixing incompatible study versions rather than silently
+    #: comparing responses that do not share the same case definitions.
+    study_version: str
     #: True only for records produced by ``validation.py``'s developer
     #: validation mode. Must be False for every real participant
     #: response. ``analysis.analyze`` unconditionally excludes any

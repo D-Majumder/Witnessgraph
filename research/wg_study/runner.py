@@ -23,10 +23,17 @@ from __future__ import annotations
 import hashlib
 import random
 from datetime import UTC, datetime
+from pathlib import Path
 
 from research.wg_study import answer_key as answer_key_module
 from research.wg_study import storage
-from research.wg_study.model import ALL_CONDITIONS, Answer, Condition, ParticipantResponse
+from research.wg_study.model import (
+    ALL_CONDITIONS,
+    STUDY_VERSION,
+    Answer,
+    Condition,
+    ParticipantResponse,
+)
 
 #: Fixed, recorded random seed for WG-Study condition assignment and
 #: case-order counterbalancing. Changing this value changes every
@@ -74,6 +81,9 @@ def lookup_correct_answer(
 
 def record_response(
     *,
+    # NOTE: ``out_dir``, when given, must be a ``Path`` the CALLER
+    # constructed directly (test fixtures, developer tooling) -- never
+    # built from participant-supplied input. See ``storage.append_response``.
     participant_id: str,
     condition: Condition,
     case_id: str,
@@ -84,6 +94,7 @@ def record_response(
     notes: str | None,
     answer_keys_by_case: dict[str, answer_key_module.CaseAnswerKey],
     is_developer_validation: bool = False,
+    out_dir: Path | None = None,
 ) -> ParticipantResponse:
     correct = lookup_correct_answer(answer_keys_by_case[case_id], chain_pair)
     response = ParticipantResponse(
@@ -96,7 +107,8 @@ def record_response(
         response_time_ms=response_time_ms,
         timestamp=datetime.now(UTC).isoformat(),
         optional_notes=notes,
+        study_version=STUDY_VERSION,
         is_developer_validation=is_developer_validation,
     )
-    storage.append_response(response)
+    storage.append_response(response, out_dir=out_dir)
     return response
