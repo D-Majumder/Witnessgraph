@@ -1,14 +1,19 @@
 # WG-Study: Draft Preregistration Package
 
-**Status: DRAFT. Not yet submitted to any registry (e.g. OSF,
-AsPredicted), and no real participant data exists anywhere in this
-repository or its history as of this document's writing.** This
-document exists to fix, in writing and before any real data collection,
-the exact analysis this study will run — so that a future analysis
-cannot be silently adjusted after seeing results. See
+**Status: DRAFT — NOT YET PREREGISTERED.** No submission has been made
+to any registry (e.g. OSF, AsPredicted), and no real participant data
+exists anywhere in this repository or its history as of this document's
+writing. This document exists to fix, in writing and before any real
+data collection, the exact analysis this study will run — so that a
+future analysis cannot be silently adjusted after seeing results. See
 `docs/research/wg-study.md` §10 for why this repository implements no
-inferential statistics yet, and §16/§20 for this document's place in the
-sequence of prerequisites before real recruitment.
+inferential statistics yet, §16/§20 for this document's place in the
+sequence of prerequisites before real recruitment, and
+`docs/research/wg-study-reporting.md` §19 for the explicit distinction
+this protocol draws between a usability/variance-estimation **pilot**
+and a hypothesis-testing **confirmatory study** — this document's §5/§6
+must be completed, and an actual registry submission made, before any
+confirmatory (not pilot) data collection begins.
 
 ## 1. Research questions and hypotheses
 
@@ -87,7 +92,13 @@ must satisfy before it is used to interpret real data:
   per-participant, which in turn interacts with the sample-size
   calculation in §5. Both must be settled together, in writing, before
   data collection, not derived post hoc from whatever data collection
-  produces.
+  produces. **Whichever test is ultimately chosen must account for
+  within-participant clustering** (each participant answers many
+  questions across many cases, so individual questions are not
+  independent observations) — see
+  `docs/research/wg-study-reporting.md` §12 for the fuller statement of
+  this principle and the candidate analysis families it identifies
+  without locking one in.
 - Effect size and its confidence interval must be reported alongside
   any p-value for every comparison — a p-value alone will not be
   reported as the whole result.

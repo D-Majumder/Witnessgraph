@@ -20,6 +20,10 @@ top of this design:
 - `docs/research/wg-study-preregistration.md` — draft preregistration
   package (sample size and statistical test family are explicitly not
   yet decided).
+- `docs/research/wg-study-reporting.md` — the reporting plan a future
+  real dataset must be held to, including the explicit pilot-vs-
+  confirmatory distinction, the practical-claim boundaries, and the
+  rules preventing selective reporting of null/negative results.
 
 Reproduce the developer-validation self-check from the repository root:
 
